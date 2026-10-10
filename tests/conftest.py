@@ -23,14 +23,19 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def make_stub_vllm() -> Starlette:
-    """A minimal stand-in for `vllm serve`: OpenAI-compatible endpoints."""
+def make_stub_vllm(captured: list) -> Starlette:
+    """A minimal stand-in for `vllm serve`: OpenAI-compatible endpoints.
+
+    `captured` records the OpenAI request bodies the stub receives, so tests can
+    assert on the exact parameters the proxy forwarded to the worker.
+    """
 
     async def health(_request):
         return PlainTextResponse("OK")
 
     async def chat(request):
         body = await request.json()
+        captured.append(body)
         model = body.get("model")
         if body.get("stream"):
             async def gen():
@@ -106,10 +111,16 @@ def make_stub_vllm() -> Starlette:
 
 
 @pytest.fixture()
-def stub_server():
+def stub_captured() -> list:
+    """OpenAI request bodies received by the stub worker (see make_stub_vllm)."""
+    return []
+
+
+@pytest.fixture()
+def stub_server(stub_captured):
     """Run the stub vLLM server in a thread; yields its port."""
     port = _free_port()
-    config = uvicorn.Config(make_stub_vllm(), host="127.0.0.1", port=port, log_level="error")
+    config = uvicorn.Config(make_stub_vllm(stub_captured), host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     t = threading.Thread(target=server.run, daemon=True)
     t.start()

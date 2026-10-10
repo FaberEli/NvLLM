@@ -133,9 +133,8 @@ def test_api_chat_stream(client):
     assert lines[-1]["prompt_eval_count"] == 7
 
 
-def test_api_chat_options_mapping(client):
-    # num_predict -> max_tokens must reach the worker (stub echoes nothing,
-    # so just assert the request is accepted and answered)
+def test_api_chat_options_mapping(client, stub_captured):
+    # Ollama `options` must be translated onto the worker's OpenAI body
     r = client.post(
         "/api/chat",
         json={
@@ -146,6 +145,11 @@ def test_api_chat_options_mapping(client):
     )
     assert r.status_code == 200
     assert r.json()["message"]["content"] == "Hello world"
+    sent = stub_captured[-1]
+    assert sent["max_tokens"] == 12          # num_predict -> max_tokens
+    assert sent["temperature"] == 0.5
+    assert "top_k" not in sent               # dropped: no OpenAI counterpart
+    assert sent["model"] == "acme/TinyLM:main"
 
 
 def test_api_generate(client):
