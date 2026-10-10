@@ -61,7 +61,7 @@ class Worker:
 
     @property
     def base_url(self) -> str:
-        return f"http://{self.info.snapshot_dir and '127.0.0.1'}:{self.port}"
+        return f"http://127.0.0.1:{self.port}"
 
     def to_ps(self) -> dict:
         d = {

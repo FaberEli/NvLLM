@@ -237,22 +237,29 @@ def discover(hub_root: Path) -> list[ModelInfo]:
 
 
 def by_name(catalog: list[ModelInfo], name: str) -> ModelInfo | None:
-    """Resolve a name like 'org/name', 'org/name:tag' or 'name' (unique suffix match)."""
+    """Resolve a name like 'org/name', 'org/name:tag' or 'name' (unique suffix match).
+
+    Without a tag (or with the conventional 'latest' tag) any ref of the repo
+    matches — HF caches usually only have 'main' — preferring main/latest.
+    """
     name = name.strip()
     repo, _, tag = name.partition(":")
     if not tag:
         tag = "latest"
 
-    def match(m: ModelInfo) -> bool:
-        return m.repo == repo and m.tag == tag
+    def repo_match(m: ModelInfo) -> bool:
+        # bare-name queries (e.g. "Llama-3.3-70B") match on the repo's last path segment
+        return m.repo == repo or m.repo.split("/", 1)[-1] == repo
 
-    for m in catalog:
-        if match(m):
-            return m
-    # unique bare-name suffix match (e.g. "Llama-3.3-70B-NVFP4")
-    suffixes = [m for m in catalog if m.repo.split("/", 1)[-1] == repo and m.tag == tag]
-    if len(suffixes) == 1:
-        return suffixes[0]
+    pool = [m for m in catalog if repo_match(m) and (m.tag == tag or tag == "latest")]
+    if pool:
+        if tag == "latest":
+            for pref in ("main", "latest"):
+                for m in pool:
+                    if m.tag == pref:
+                        return m
+            return pool[0]
+        return pool[0]
     # case-insensitive fallback
     low = name.lower()
     ci = [m for m in catalog if m.name.lower() == low]
