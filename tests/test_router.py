@@ -77,6 +77,28 @@ def test_parse_choice_variants():
     assert r.parse_choice("totally/unknown") is None
 
 
+def test_parse_choice_short_base_name():
+    """A judge that uses a model's short/base name (no quant tag) still resolves."""
+    judge = _mi("acme/Judge", {Capability.COMPLETION})
+    a = _mi("acme/Llama-3.1-8B-Instruct-NVFP4", {Capability.COMPLETION})
+    b = _mi("acme/Qwen3-14B-NVFP4", {Capability.COMPLETION})
+    r = Router(judge=judge, candidates=[judge, a, b])
+    # short name (base name) of the only model mentioned -> resolves to it
+    assert r.parse_choice("I think Llama-3.1-8B-Instruct is the best fit") is a
+    # full bare name still works
+    assert r.parse_choice("acme/Qwen3-14B-NVFP4") is b
+
+
+def test_parse_choice_ambiguous_is_none():
+    """A reply naming several models must not mis-route (returns None -> fallback)."""
+    judge = _mi("acme/Judge", {Capability.COMPLETION})
+    a = _mi("acme/Llama-3.1-8B-Instruct-NVFP4", {Capability.COMPLETION})
+    b = _mi("acme/Qwen3-14B-NVFP4", {Capability.COMPLETION})
+    r = Router(judge=judge, candidates=[judge, a, b])
+    # both base names appear -> ambiguous -> None (safe fallback)
+    assert r.parse_choice("weighing Llama-3.1-8B-Instruct vs Qwen3-14B, I lean toward one") is None
+
+
 def test_fallback_is_largest_candidate():
     judge = _mi("acme/Judge", {Capability.COMPLETION})
     small = _mi("acme/Small", {Capability.COMPLETION}, size=1)
@@ -173,8 +195,10 @@ def router_client(tmp_path: Path, monkeypatch):
     async def fake_ensure(info, keep_alive=None, is_judge=False):
         w = manager.workers.get(info.name)
         if w is None or w.state != STATE_READY:
-            w = Worker(info=info, port=port, state=STATE_READY, pid=9999)
+            w = Worker(info=info, port=port, state=STATE_READY, pid=9999, is_judge=is_judge)
             manager.workers[info.name] = w
+        else:
+            w.is_judge = is_judge
         return w
 
     monkeypatch.setattr(manager, "ensure", fake_ensure)
@@ -193,6 +217,24 @@ def test_auto_routes_to_judges_choice(router_client):
     assert body["message"]["content"] == "routed-ok"
 
 
+def test_judge_loaded_as_judge(router_client):
+    """Regression: the judge must load as the judge, not an evictable worker.
+
+    It used to be matched by "repo:tag" name against the "repo" router_judge
+    string, so it loaded as a normal (non-judge) worker and got evicted the moment
+    the routed candidate loaded.
+    """
+    r = router_client.post(
+        "/api/chat",
+        json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200
+    manager = router_client.app.state.manager
+    judge_w = manager.workers.get("acme/JudgeLM:main")
+    assert judge_w is not None
+    assert judge_w.is_judge is True  # loaded as the judge, never evicted
+
+
 def test_router_endpoint_reports_config(router_client):
     r = router_client.get("/api/router")
     assert r.status_code == 200
@@ -209,3 +251,22 @@ def test_auto_400_when_routing_not_configured(client):
     r = client.post("/api/chat", json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]})
     assert r.status_code == 400
     assert "routing not configured" in r.json()["error"]
+
+
+def test_router_candidates_whitelist(tmp_path: Path):
+    """router_candidates restricts the Router to the named repos only."""
+    from nvllm_service.config import Settings
+    from nvllm_service.main import create_app
+
+    settings = Settings(
+        hf_hub_root=_make_router_hub(tmp_path),
+        router_judge="acme/JudgeLM",
+        router_candidates=["acme/BigLM"],
+    )
+    app = create_app(settings)
+    r = app.state.router
+    assert r is not None
+    names = {m.name for m in r.candidates}
+    assert "acme/BigLM:main" in names
+    assert "acme/Embedder:main" not in names  # excluded by the whitelist
+    assert "acme/JudgeLM:main" not in names  # judge is never a target

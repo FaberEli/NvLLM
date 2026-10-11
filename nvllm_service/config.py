@@ -81,6 +81,9 @@ class Settings:
 
     # --- routing (Router) ---
     router_judge: str | None = field(default_factory=lambda: _env_str("NVLLM_ROUTER_JUDGE"))
+    # Optional whitelist of candidate repos ("org/name") the Router may route to;
+    # empty = all supported models. Keeps routing to models that actually fit in memory.
+    router_candidates: list[str] = field(default_factory=list)
 
     # --- misc ---
     log_dir: Path | None = field(default=None)  # None -> <service_dir>/logs
@@ -102,4 +105,7 @@ class Settings:
             import shlex
 
             s.worker_extra_args = shlex.split(extra)
+        cands = os.environ.get("NVLLM_ROUTER_CANDIDATES", "")
+        if cands:
+            s.router_candidates = [c.strip() for c in cands.split(",") if c.strip()]
         return s

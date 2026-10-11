@@ -49,7 +49,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         judge = by_name(catalog, settings.router_judge)
         if judge is None or not judge.supported:
             raise RuntimeError(f"router judge '{settings.router_judge}' is not a servable catalog model")
-        router = Router(judge=judge, candidates=[m for m in catalog if m.supported])
+        candidates = [m for m in catalog if m.supported]
+        if settings.router_candidates:
+            wanted = set(settings.router_candidates)
+            candidates = [m for m in candidates if m.repo in wanted]
+        router = Router(judge=judge, candidates=candidates)
         log.info("router enabled: judge=%s, %d candidate(s)", judge.name, len(router.candidates))
     app.state.router = router
 
@@ -71,8 +75,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=f"model '{info.name}' does not support {cap.value}")
 
     async def ensure(info: ModelInfo, keep_alive: int | None) -> Worker:
-        # the configured judge model is never evicted once loaded
-        is_judge = bool(settings.router_judge) and info.name == settings.router_judge
+        # the configured judge model is never evicted once loaded. Match by repo, not
+        # name: info.name is "repo:tag" while router_judge is given as "repo" (or a
+        # different tag), so a name compare would miss it and load the judge as an
+        # ordinary (evictable) worker.
+        is_judge = router is not None and info.repo == router.judge.repo
         try:
             return await manager.ensure(info, keep_alive=keep_alive, is_judge=is_judge)
         except (TimeoutError, RuntimeError, OSError) as e:

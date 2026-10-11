@@ -22,6 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-model-len", type=int, default=None, help="pass --max-model-len to workers")
     p.add_argument("--gpu-memory-utilization", type=float, default=None, help="pass to workers")
     p.add_argument("--router-judge", default=None, help="model name to act as the Router judge")
+    p.add_argument("--router-candidates", default=None, help="comma-separated repos to restrict routing candidates (default: all supported)")
     p.add_argument("--log-level", default="info", help="log level")
     args = p.parse_args(argv)
 
@@ -48,6 +49,8 @@ def main(argv: list[str] | None = None) -> int:
         s.worker_gpu_memory_utilization = args.gpu_memory_utilization
     if args.router_judge:
         s.router_judge = args.router_judge
+    if args.router_candidates:
+        s.router_candidates = [c.strip() for c in args.router_candidates.split(",") if c.strip()]
 
     app = create_app(s)
 
