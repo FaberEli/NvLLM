@@ -62,6 +62,11 @@ class Settings:
         default_factory=lambda: _env_float("NVLLM_GPU_MEMORY_UTILIZATION", 0.5)
     )
     worker_max_num_seqs: int | None = field(default_factory=lambda: _env_int("NVLLM_MAX_NUM_SEQS"))
+    # Cap on parallel kernel-JIT compile jobs (FlashInfer's run_ninja honors MAX_JOBS).
+    # On shared/unified-memory boxes (DGX Spark) the default parallelism (~nproc)
+    # OOM-kills nvcc mid-compile (SIGKILL / exit 137); 2-4 is safe there.
+    # None = let FlashInfer/ninja choose (fine on a dedicated big-memory host).
+    worker_max_jobs: int | None = field(default_factory=lambda: _env_int("NVLLM_WORKER_MAX_JOBS"))
     worker_trust_remote_code: bool = field(
         default_factory=lambda: os.environ.get("NVLLM_TRUST_REMOTE_CODE", "0") == "1"
     )

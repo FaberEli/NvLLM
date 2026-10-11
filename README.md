@@ -85,13 +85,20 @@ Precedence: **CLI flag > environment variable > default**.
 | `--gpu-memory-utilization` | `NVLLM_GPU_MEMORY_UTILIZATION` | `0.5` | passed to workers |
 | `--router-judge` | `NVLLM_ROUTER_JUDGE` | — | model name to act as the Router judge |
 
-Also honored by workers: `NVLLM_MAX_NUM_SEQS`, `NVLLM_TRUST_REMOTE_CODE`, and
-`NVLLM_WORKER_EXTRA_ARGS` (raw args appended to every `vllm serve`, e.g.
-`"--enable-auto-tool-choice --tool-call-parser hermes"`).
+Also honored by workers: `NVLLM_MAX_NUM_SEQS`, `NVLLM_TRUST_REMOTE_CODE`,
+`NVLLM_WORKER_MAX_JOBS`, and `NVLLM_WORKER_EXTRA_ARGS` (raw args appended to every
+`vllm serve`, e.g. `"--enable-auto-tool-choice --tool-call-parser hermes"`).
 
 > **DGX Spark (GB10):** the OS/desktop consumes a large share of the 128G
 > unified memory, so vLLM's default `gpu-memory-utilization` of 0.92 fails at
 > startup. `0.5` is a safe default there; raise it on a dedicated machine.
+
+> **NVFP4 first load (DGX Spark):** the first request JIT-compiles the
+> FlashInfer CUTLASS NVFP4 GEMM kernels into `~/.cache/flashinfer`. That is a
+> large, memory-hungry one-time build — at the default parallelism it
+> OOM-kills `nvcc` (SIGKILL / exit 137) on the Spark's shared 128G. Set
+> `NVLLM_WORKER_MAX_JOBS=2` (or 3–4). The kernels are cached, so subsequent
+> loads are fast.
 
 ## Endpoints
 
@@ -121,5 +128,7 @@ runs without a GPU or a real vLLM install.
 - **M1** — catalog discovery + metadata API + worker process management. ✅
 - **M2** — inference proxy (Ollama + OpenAI, streaming). ✅
 - **M3** — Router / auto-routing (`--router-judge` + `model: "auto"`). ✅
-- **Next** — end-to-end NVFP4 smoke test on DGX Spark, multi-model concurrency,
-  throughput/latency tuning for NVFP4.
+- **M4** — end-to-end NVFP4 smoke test on DGX Spark (GB10): `Llama-3.1-8B-Instruct-NVFP4`
+  served over both `/api/chat` (Ollama) and `/v1/chat/completions` (OpenAI). ✅
+- **Next** — multi-model concurrency, throughput/latency tuning for NVFP4,
+  and a Router smoke test with a real judge model.

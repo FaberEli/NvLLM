@@ -34,12 +34,41 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _venv_bin_dir() -> str:
+    """The ``bin`` directory of the running interpreter (where ``ninja`` lives)."""
+    return os.path.dirname(os.path.abspath(sys.executable))
+
+
 def _vllm_bin() -> str:
     """The `vllm` executable next to the running interpreter."""
-    cand = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "vllm")
+    cand = os.path.join(_venv_bin_dir(), "vllm")
     if os.path.exists(cand):
         return cand
     return "vllm"  # fall back to PATH
+
+
+def _worker_env(settings: Settings) -> dict[str, str]:
+    """Worker process environment.
+
+    Prepend the venv's ``bin`` dir to ``PATH`` so the worker finds tooling
+    installed in the venv (notably ``ninja``) even when the service was started
+    without activating the venv (e.g. ``.venv/bin/python -m nvllm_service``).
+    torch's inductor JIT compiler shells out to ``ninja`` and aborts engine
+    init with ``FileNotFoundError: 'ninja'`` if it is not on ``PATH``.
+
+    Also set ``MAX_JOBS`` (honored by FlashInfer's ``run_ninja``) when
+    ``worker_max_jobs`` is configured, to cap parallel CUTLASS kernel JIT
+    compiles — the default (~nproc) parallelism OOM-kills nvcc on the shared
+    unified memory of a DGX Spark (exit 137 / SIGKILL).
+    """
+    env = dict(os.environ)
+    bin_dir = _venv_bin_dir()
+    path = env.get("PATH", os.defpath)
+    if bin_dir not in path.split(os.pathsep):
+        env["PATH"] = bin_dir + os.pathsep + path
+    if settings.worker_max_jobs and settings.worker_max_jobs > 0:
+        env["MAX_JOBS"] = str(settings.worker_max_jobs)
+    return env
 
 
 @dataclass
@@ -163,7 +192,6 @@ class WorkerManager:
             str(port),
             "--served-model-name",
             info.name,
-            "--disable-log-requests",
         ]
         if s.worker_max_model_len:
             cmd += ["--max-model-len", str(s.worker_max_model_len)]
@@ -187,6 +215,7 @@ class WorkerManager:
             stdout=logf,
             stderr=logf,
             cwd=str(logs_dir),
+            env=_worker_env(s),
             start_new_session=True,
         )
         worker.pid = worker.process.pid

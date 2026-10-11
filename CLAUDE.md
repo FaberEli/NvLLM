@@ -50,3 +50,13 @@ user-facing doc; this file is for working on the code.
   the `model` field on `/v1/*` passthrough.
 - Streaming helpers are async so connect-failures / worker 4xx surface as proper
   HTTP errors *before* the response stream starts.
+- **Worker process env (`_worker_env`)**: the venv's `bin` dir is prepended to
+  `PATH` so a worker finds `ninja` even when the service is started via
+  `.venv/bin/python -m nvllm_service` (no activation) — torch's inductor otherwise
+  dies with `FileNotFoundError: 'ninja'`. `worker_max_jobs` sets `MAX_JOBS`, which
+  FlashInfer's `run_ninja` honors to cap parallel CUTLASS kernel JIT; the default
+  (~nproc) parallelism OOM-kills `nvcc` on the Spark's shared 128G (exit 137).
+- **vLLM version drift**: the venv pins vLLM 0.31, which *removed*
+  `--disable-log-requests` and groups CLI help into "Config Groups" (probe a flag
+  with `vllm serve --help=<flag>`). Don't re-add removed flags to the worker cmd —
+  a worker that exits `rc=1` during startup is usually an unrecognized argument.
