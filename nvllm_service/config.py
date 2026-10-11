@@ -49,8 +49,14 @@ class Settings:
     # --- scheduler / lifecycle ---
     # seconds a model stays loaded after its last request; -1 = keep forever, 0 = unload immediately
     default_keep_alive: int = field(default_factory=lambda: _env_int("NVLLM_KEEP_ALIVE", 300))
+    # Max non-judge models resident at once (the judge is separate, always resident, never counted).
+    # 1 = one model at a time (default; safe on shared/unified memory like DGX Spark). Raise it to
+    # co-locate models, and lower worker_gpu_memory_utilization accordingly so they fit.
+    max_models: int = field(default_factory=lambda: max(1, _env_int("NVLLM_MAX_MODELS", 1)))
     max_queue: int = field(default_factory=lambda: _env_int("NVLLM_MAX_QUEUE", 32))
     load_timeout: float = field(default_factory=lambda: _env_float("NVLLM_LOAD_TIMEOUT", 1800.0))
+    # how often the monitor reaps crashed / expired workers (seconds)
+    monitor_interval: float = field(default_factory=lambda: _env_float("NVLLM_MONITOR_INTERVAL", 2.0))
 
     # --- worker (vllm serve) ---
     worker_host: str = field(default_factory=lambda: _env_str("NVLLM_WORKER_HOST", "127.0.0.1"))

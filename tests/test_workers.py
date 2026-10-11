@@ -8,6 +8,7 @@ self-contained stdlib server so no real vLLM (or GPU) is needed.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -123,6 +124,41 @@ def _two_models(fake_hub: Path):
     return a, b
 
 
+_SHA3 = "b" * 40
+
+
+def _three_model_hub(root: Path) -> None:
+    """Create a fake HF hub with three servable (CausalLM) models under `root`."""
+    cfg = {
+        "architectures": ["TinyLMForCausalLM"],
+        "model_type": "tinylm",
+        "hidden_size": 128,
+        "num_hidden_layers": 2,
+        "vocab_size": 512,
+    }
+    for name in ("AlphaLM", "BetaLM", "GammaLM"):
+        mdir = root / f"models--acme--{name}"
+        (mdir / "refs").mkdir(parents=True)
+        (mdir / "refs" / "main").write_text(_SHA3)
+        snap = mdir / "snapshots" / _SHA3
+        snap.mkdir(parents=True)
+        (snap / "config.json").write_text(json.dumps(cfg))
+        (snap / "tokenizer_config.json").write_text(
+            json.dumps({"chat_template": "{% for m in messages %}{{m.content}}{% endfor %}"})
+        )
+        (snap / "model.safetensors").write_bytes(b"\0" * 1024)
+
+
+def _three_models(tmp_path: Path):
+    """Build a 3-servable-model hub; return (root, [a, b, c]) sorted by name."""
+    root = tmp_path / "hub3"
+    _three_model_hub(root)
+    catalog = discover(root)
+    models = sorted((m for m in catalog if m.supported), key=lambda m: m.name)
+    assert len(models) == 3, f"expected 3 servable models, got {len(models)}"
+    return root, models
+
+
 def run_scenario(manager: WorkerManager, scenario) -> None:
     """Run an async scenario in one loop and always tear workers down after."""
 
@@ -229,3 +265,110 @@ def test_spawn_failure_raises_and_cleans(manager, failing_vllm, fake_hub):
         assert manager.get(info.name) is None  # cleaned up, not left as zombie
 
     run_scenario(manager, scenario)
+
+
+# ---- M5: multi-model concurrency + keep-alive reaping -------------------------
+
+
+def test_multi_model_coexistence(tmp_path, fake_vllm):
+    """max_models=2 -> two non-judge models may be resident at once (no eviction)."""
+    root, (a, b, _c) = _three_models(tmp_path)
+    mgr = WorkerManager(Settings(hf_hub_root=root, load_timeout=20, max_models=2))
+
+    async def scenario():
+        wa = await mgr.ensure(a)
+        wb = await mgr.ensure(b)  # within capacity -> not evicted
+        assert wa.state == STATE_READY and wa.process.returncode is None
+        assert wb.state == STATE_READY
+        assert len(await mgr.loaded_models()) == 2
+
+    run_scenario(mgr, scenario)
+
+
+def test_lru_eviction_over_capacity(tmp_path, fake_vllm):
+    """max_models=2, loading a 3rd evicts the least-recently-used (a)."""
+    root, (a, b, c) = _three_models(tmp_path)
+    mgr = WorkerManager(Settings(hf_hub_root=root, load_timeout=20, max_models=2))
+
+    async def scenario():
+        await mgr.ensure(a)
+        await mgr.ensure(b)
+        wc = await mgr.ensure(c)  # over capacity -> evicts LRU (a, oldest last_used)
+        assert wc.state == STATE_READY
+        aw = mgr.get(a.name)
+        assert aw.state == STATE_STOPPED and aw.process.returncode is not None
+        assert mgr.get(b.name).state == STATE_READY
+        assert mgr.get(c.name).state == STATE_READY
+
+    run_scenario(mgr, scenario)
+
+
+def test_expired_evicted_first(tmp_path, fake_vllm):
+    """When choosing a victim, an expired worker is evicted before a still-valid one."""
+    root, (a, b, c) = _three_models(tmp_path)
+    mgr = WorkerManager(Settings(hf_hub_root=root, load_timeout=20, max_models=2))
+
+    async def scenario():
+        await mgr.ensure(a)
+        await mgr.ensure(b)
+        mgr.get(a.name).expires_at = time.time() - 1  # mark a expired (past keep-alive)
+        wc = await mgr.ensure(c)  # over capacity -> evicts a (expired) before b
+        assert wc.state == STATE_READY
+        assert mgr.get(a.name).state == STATE_STOPPED
+        assert mgr.get(b.name).state == STATE_READY
+        assert mgr.get(c.name).state == STATE_READY
+
+    run_scenario(mgr, scenario)
+
+
+def test_judge_excluded_from_count_and_eviction(tmp_path, fake_vllm):
+    """The judge is never counted against max_models and never evicted."""
+    root, (a, b, c) = _three_models(tmp_path)
+    mgr = WorkerManager(Settings(hf_hub_root=root, load_timeout=20, max_models=1))
+
+    async def scenario():
+        wj = await mgr.ensure(a, is_judge=True)  # a acts as judge
+        wb = await mgr.ensure(b)  # non-judge; judge doesn't count toward max_models=1
+        assert wj.state == STATE_READY and wb.state == STATE_READY
+        wc = await mgr.ensure(c)  # over capacity -> evicts LRU non-judge (b), keeps judge
+        assert wc.state == STATE_READY
+        assert wj.state == STATE_READY and wj.process.returncode is None  # judge stays alive
+        assert mgr.get(b.name).state == STATE_STOPPED
+        assert mgr.get(c.name).state == STATE_READY
+
+    run_scenario(mgr, scenario)
+
+
+def test_expired_worker_reaped(tmp_path, fake_vllm, fake_hub):
+    """_reap_once() unloads a worker whose keep-alive has elapsed."""
+    info, _ = _two_models(fake_hub)
+    mgr = WorkerManager(Settings(hf_hub_root=fake_hub, load_timeout=20))
+
+    async def scenario():
+        w = await mgr.ensure(info, keep_alive=1)  # would expire after 1s
+        assert w.state == STATE_READY
+        w.expires_at = time.time() - 1  # force "expired" for determinism (no sleep)
+        await mgr._reap_once()
+        cur = mgr.get(info.name)
+        assert cur is None or cur.state == STATE_STOPPED
+
+    run_scenario(mgr, scenario)
+
+
+def test_inflight_blocks_reap(tmp_path, fake_vllm, fake_hub):
+    """A worker with an in-flight request is not reaped; once done, it is."""
+    info, _ = _two_models(fake_hub)
+    mgr = WorkerManager(Settings(hf_hub_root=fake_hub, load_timeout=20))
+
+    async def scenario():
+        w = await mgr.ensure(info, keep_alive=0)  # expired immediately
+        assert w.state == STATE_READY
+        w.inflight = 1  # a request is in flight -> must be protected
+        await mgr._reap_once()
+        assert mgr.get(info.name) is w  # still resident
+        w.inflight = 0  # request finished -> now reapable
+        await mgr._reap_once()
+        cur = mgr.get(info.name)
+        assert cur is None or cur.state == STATE_STOPPED
+
+    run_scenario(mgr, scenario)

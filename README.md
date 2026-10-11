@@ -16,9 +16,13 @@ respawn.
   catalog of models, detecting capabilities (completion / embedding / tools) and
   flagging anything vLLM can't serve.
 - **Workers** — one `vllm serve` process per model. The manager starts it on a
-  free port, polls `/health` until ready, and reaps crashed workers. Only one
-  non-judge model is resident at a time (Ollama-like); the configured Router
-  judge is never evicted.
+  free port, polls `/health` until ready, and reaps crashed workers. Up to
+  `--max-models` non-judge models (default `1`) may be resident at once; when a
+  new model would exceed that, the least-valued resident is evicted (expired
+  workers first, then least-recently-used). Idle workers past their `--keep-alive`
+  are unloaded automatically. The configured Router judge is never evicted.
+  Loading is **serialized** (one model loads at a time — safe on shared/unified
+  memory), while already-loaded models serve **concurrently**.
 - **Proxy** — each request is resolved against the catalog, a worker is ensured,
   then the call is forwarded. Ollama bodies are translated to OpenAI and back,
   including streaming (OpenAI SSE in, Ollama NDJSON out).
@@ -81,6 +85,7 @@ Precedence: **CLI flag > environment variable > default**.
 | `--port` | `NVLLM_PORT` | `8004` | bind port |
 | `--hf-hub-root` | `HF_HUB_CACHE` / `HF_HOME` | `~/.cache/huggingface/hub` | HF cache to scan |
 | `--keep-alive` | `NVLLM_KEEP_ALIVE` | `300` | idle seconds before unload (`-1` keep forever, `0` unload immediately) |
+| `--max-models` | `NVLLM_MAX_MODELS` | `1` | max non-judge models resident at once (judge excluded) |
 | `--max-model-len` | `NVLLM_MAX_MODEL_LEN` | (vLLM default) | passed to workers |
 | `--gpu-memory-utilization` | `NVLLM_GPU_MEMORY_UTILIZATION` | `0.5` | passed to workers |
 | `--router-judge` | `NVLLM_ROUTER_JUDGE` | — | model name to act as the Router judge |
@@ -99,6 +104,30 @@ Also honored by workers: `NVLLM_MAX_NUM_SEQS`, `NVLLM_TRUST_REMOTE_CODE`,
 > OOM-kills `nvcc` (SIGKILL / exit 137) on the Spark's shared 128G. Set
 > `NVLLM_WORKER_MAX_JOBS=2` (or 3–4). The kernels are cached, so subsequent
 > loads are fast.
+
+## Multi-model concurrency
+
+By default only **one** non-judge model is resident at a time (`--max-models 1`)
+— safe on the Spark's shared 128G. Raise it to keep several models warm:
+
+```bash
+# keep two 8B-class models resident at once
+NVLLM_MAX_MODELS=2 NVLLM_GPU_MEMORY_UTILIZATION=0.35 .venv/bin/python -m nvllm_service
+```
+
+- **Residency is concurrent, loading is serial.** Already-loaded models serve
+  requests in parallel, but only one model loads at a time (two simultaneous
+  `vllm serve` loads — each JIT-compiling kernels — can OOM the shared memory).
+  A request for a not-yet-loaded model waits its turn.
+- **Eviction is LRU, expired-first.** When a new model would exceed
+  `--max-models`, the manager evicts expired residents first, then the
+  least-recently-used. The judge is never evicted.
+- **`keep-alive` now really unloads.** Idle workers past their keep-alive are
+  reaped by the monitor; a worker mid-request is never killed.
+- **Memory math (DGX Spark, 128G):** `gpu-memory-utilization` is per-worker, as
+  a fraction of *total* device memory. So `N` workers × `U` must fit: at the
+  default `U=0.5`, two workers already claim the whole 128G. For `N` models use
+  roughly `U ≈ headroom / N` (e.g. `N=2 → U≈0.35`).
 
 ## Endpoints
 
@@ -130,5 +159,8 @@ runs without a GPU or a real vLLM install.
 - **M3** — Router / auto-routing (`--router-judge` + `model: "auto"`). ✅
 - **M4** — end-to-end NVFP4 smoke test on DGX Spark (GB10): `Llama-3.1-8B-Instruct-NVFP4`
   served over both `/api/chat` (Ollama) and `/v1/chat/completions` (OpenAI). ✅
-- **Next** — multi-model concurrency, throughput/latency tuning for NVFP4,
-  and a Router smoke test with a real judge model.
+- **M5** — multi-model concurrency: `--max-models` (co-located non-judge models,
+  LRU/expired-first eviction), `keep-alive` expiry reaping, and in-flight protection
+  so a request is never cut off. ✅
+- **Next** — throughput/latency tuning for NVFP4, and a Router smoke test with a
+  real judge model.

@@ -13,6 +13,7 @@ import os
 import socket
 import sys
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 import httpx
@@ -82,6 +83,8 @@ class Worker:
     process: asyncio.subprocess.Process | None = field(default=None, repr=False)
     expires_at: float | None = None  # epoch seconds; None = keep forever
     started_at: float = field(default_factory=time.time)
+    last_used: float = field(default_factory=time.time)  # epoch; LRU basis, refreshed on every ensure() hit
+    inflight: int = 0  # in-flight requests; the monitor will not reap a worker while this is > 0
     log_path: str = ""
 
     @property
@@ -103,6 +106,7 @@ class Worker:
             "context_length": self.info.context_length,
             "state": self.state,
             "pid": self.pid,
+            "last_used": self.last_used,
         }
         if self.expires_at:
             from datetime import datetime, timezone
@@ -125,12 +129,23 @@ class WorkerManager:
         if self._monitor_task is None or self._monitor_task.done():
             self._monitor_task = asyncio.get_running_loop().create_task(self._monitor())
 
-    async def _monitor(self) -> None:
-        """Reap workers whose process died (crash or OOM) and log the cause."""
-        while True:
-            await asyncio.sleep(2)
+    async def _reap_once(self) -> None:
+        """One pass: (1) mark crashed/OOM-killed workers as errored, and
+        (2) unload idle workers whose keep-alive has elapsed.
+
+        Runs under a single lock acquisition (so we never re-enter the lock via
+        ``unload``), and skips the judge and any worker with an in-flight request
+        (inflight > 0) so a keep-alive of 0 cannot kill a worker mid-request.
+        """
+        async with self._lock:
+            now = time.time()
             for w in list(self.workers.values()):
-                if w.state in (STATE_LOADING, STATE_READY) and w.process and w.process.returncode is not None:
+                # (1) process died (crash or OOM) -> mark stopped/error
+                if (
+                    w.state in (STATE_LOADING, STATE_READY)
+                    and w.process
+                    and w.process.returncode is not None
+                ):
                     rc = w.process.returncode
                     log.error("worker %s exited unexpectedly (rc=%s); marking stopped", w.name, rc)
                     w.state = STATE_ERROR
@@ -142,15 +157,40 @@ class WorkerManager:
                         log.error("worker %s log tail:\n%s", w.name, "".join(tail))
                     except OSError:
                         pass
+                    continue
+                # (2) idle beyond keep-alive -> unload (never the judge, never mid-request)
+                if (
+                    not w.is_judge
+                    and w.state in (STATE_LOADING, STATE_READY)
+                    and w.inflight == 0
+                    and w.expires_at is not None
+                    and w.expires_at <= now
+                ):
+                    log.info("worker %s idle beyond keep-alive; unloading", w.name)
+                    await self._terminate(w)
+                    self.workers.pop(w.name, None)
+
+    async def _monitor(self) -> None:
+        """Run a reap pass every ``monitor_interval`` seconds."""
+        while True:
+            await asyncio.sleep(self.settings.monitor_interval)
+            await self._reap_once()
 
     def get(self, name: str) -> Worker | None:
         return self.workers.get(name)
 
-    def active_non_judge(self) -> Worker | None:
-        for w in self.workers.values():
-            if not w.is_judge and w.state in (STATE_LOADING, STATE_READY):
-                return w
-        return None
+    @asynccontextmanager
+    async def track(self, worker: Worker):
+        """Hold an in-flight reference for the duration of a request.
+
+        The monitor will not reap a worker that is serving a request (inflight > 0),
+        so a keep_alive of 0 ("unload immediately") cannot kill a worker mid-request.
+        """
+        worker.inflight += 1
+        try:
+            yield
+        finally:
+            worker.inflight = max(0, worker.inflight - 1)
 
     async def ensure(
         self,
@@ -160,20 +200,44 @@ class WorkerManager:
     ) -> Worker:
         """Return a READY worker for `info`, spawning one if needed.
 
-        If another (non-judge) worker is resident and the target is not the
-        judge, it is terminated first: one active model at a time.
+        Up to ``settings.max_models`` non-judge models may be resident at once
+        (the judge is separate: always resident, never counted, never evicted). If
+        adding the target would exceed the limit, the least-valued residents are
+        evicted first — expired workers (past their keep-alive) before still-valid
+        ones, and within each group the least-recently-used. The target itself is
+        never evicted. Spawning happens under the lock, so at most one model loads
+        at a time (safe on shared/unified memory where two concurrent vLLM loads
+        could OOM), while already-ready models serve concurrently.
         """
         async with self._lock:
             existing = self.workers.get(info.name)
             if existing and existing.state == STATE_READY:
                 self._apply_keep_alive(existing, keep_alive)
+                existing.last_used = time.time()
                 return existing
 
             # judge never evicts, is never evicted
             if not is_judge:
-                current = self.active_non_judge()
-                if current and current.name != info.name:
-                    await self._terminate(current)
+                now = time.time()
+                active = [
+                    w
+                    for w in self.workers.values()
+                    if not w.is_judge
+                    and w.state in (STATE_LOADING, STATE_READY)
+                    and w.name != info.name
+                ]
+                need = len(active) + 1 - self.settings.max_models
+                if need > 0:
+                    victims = sorted(
+                        active,
+                        key=lambda w: (
+                            0 if (w.expires_at is not None and w.expires_at <= now) else 1,
+                            w.last_used,
+                        ),
+                    )[:need]
+                    for v in victims:
+                        log.info("evicting %s to make room for %s", v.name, info.name)
+                        await self._terminate(v)
 
             return await self._spawn(info, keep_alive, is_judge=is_judge)
 

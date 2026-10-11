@@ -18,6 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=None, help="bind port (default $NVLLM_PORT or 8004)")
     p.add_argument("--hf-hub-root", default=None, help="HuggingFace hub cache directory to scan")
     p.add_argument("--keep-alive", type=int, default=None, help="default idle seconds before unload (-1 keep, 0 immediate)")
+    p.add_argument("--max-models", type=int, default=None, help="max non-judge models resident at once (default $NVLLM_MAX_MODELS or 1)")
     p.add_argument("--max-model-len", type=int, default=None, help="pass --max-model-len to workers")
     p.add_argument("--gpu-memory-utilization", type=float, default=None, help="pass to workers")
     p.add_argument("--router-judge", default=None, help="model name to act as the Router judge")
@@ -39,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
         s.hf_hub_root = args.hf_hub_root
     if args.keep_alive is not None:
         s.default_keep_alive = args.keep_alive
+    if args.max_models is not None:
+        s.max_models = max(1, args.max_models)  # guard against 0 / negative
     if args.max_model_len is not None:
         s.worker_max_model_len = args.max_model_len
     if args.gpu_memory_utilization is not None:

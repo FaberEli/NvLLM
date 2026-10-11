@@ -168,12 +168,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         info = await _resolve_model(body)
         require(info, Capability.COMPLETION)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
-        oai = forward.openai_chat_body(info.name, body)
-        t0 = time.time()
-        if not oai.get("stream"):
-            resp = await forward.forward_json(worker, "/v1/chat/completions", oai)
-            return forward.ollama_chat_response(info.name, resp, t0)
-        return await forward.ollama_chat_stream(worker, info.name, oai, t0)
+        async with manager.track(worker):
+            oai = forward.openai_chat_body(info.name, body)
+            t0 = time.time()
+            if not oai.get("stream"):
+                resp = await forward.forward_json(worker, "/v1/chat/completions", oai)
+                return forward.ollama_chat_response(info.name, resp, t0)
+            return await forward.ollama_chat_stream(worker, info.name, oai, t0)
 
     @app.post("/api/generate")
     async def api_generate(request: Request):
@@ -181,12 +182,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         info = await _resolve_model(body)
         require(info, Capability.COMPLETION)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
-        oai = forward.openai_completions_body(info.name, body)
-        t0 = time.time()
-        if not oai.get("stream"):
-            resp = await forward.forward_json(worker, "/v1/completions", oai)
-            return forward.ollama_generate_response(info.name, resp, t0)
-        return await forward.ollama_generate_stream(worker, info.name, oai, t0)
+        async with manager.track(worker):
+            oai = forward.openai_completions_body(info.name, body)
+            t0 = time.time()
+            if not oai.get("stream"):
+                resp = await forward.forward_json(worker, "/v1/completions", oai)
+                return forward.ollama_generate_response(info.name, resp, t0)
+            return await forward.ollama_generate_stream(worker, info.name, oai, t0)
 
     @app.post("/api/embed")
     async def api_embed(request: Request):
@@ -194,14 +196,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         info = await _resolve_model(body)
         require(info, Capability.EMBEDDING)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
-        inp = body.get("input")
-        if inp is None:
-            raise HTTPException(status_code=400, detail='"input" is required')
-        if isinstance(inp, str):
-            inp = [inp]
-        resp = await forward.forward_json(worker, "/v1/embeddings", {"model": info.name, "input": list(inp)})
-        rows = sorted(resp.get("data") or [], key=lambda r: r.get("index", 0))
-        return {"model": info.name, "embeddings": [r.get("embedding") for r in rows]}
+        async with manager.track(worker):
+            inp = body.get("input")
+            if inp is None:
+                raise HTTPException(status_code=400, detail='"input" is required')
+            if isinstance(inp, str):
+                inp = [inp]
+            resp = await forward.forward_json(worker, "/v1/embeddings", {"model": info.name, "input": list(inp)})
+            rows = sorted(resp.get("data") or [], key=lambda r: r.get("index", 0))
+            return {"model": info.name, "embeddings": [r.get("embedding") for r in rows]}
 
     @app.post("/api/embeddings")
     async def api_embeddings(request: Request):
@@ -209,14 +212,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         info = await _resolve_model(body)
         require(info, Capability.EMBEDDING)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
-        prompt = body.get("prompt")
-        if prompt is None:
-            raise HTTPException(status_code=400, detail='"prompt" is required')
-        resp = await forward.forward_json(worker, "/v1/embeddings", {"model": info.name, "input": prompt})
-        data = resp.get("data") or []
-        if not data:
-            raise HTTPException(status_code=502, detail="worker returned no embedding")
-        return {"embedding": data[0].get("embedding"), "model": info.name}
+        async with manager.track(worker):
+            prompt = body.get("prompt")
+            if prompt is None:
+                raise HTTPException(status_code=400, detail='"prompt" is required')
+            resp = await forward.forward_json(worker, "/v1/embeddings", {"model": info.name, "input": prompt})
+            data = resp.get("data") or []
+            if not data:
+                raise HTTPException(status_code=502, detail="worker returned no embedding")
+            return {"embedding": data[0].get("embedding"), "model": info.name}
 
     # ---- OpenAI-compatible -------------------------------------------
     @app.get("/v1/models")
@@ -229,20 +233,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         body = await _json_body(request)
         info = await _resolve_model(body)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
-        return await forward.openai_passthrough(worker, "/v1/chat/completions", body)
+        async with manager.track(worker):
+            return await forward.openai_passthrough(worker, "/v1/chat/completions", body)
 
     @app.post("/v1/completions")
     async def v1_completions(request: Request) -> Any:
         body = await _json_body(request)
         info = await _resolve_model(body)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
-        return await forward.openai_passthrough(worker, "/v1/completions", body)
+        async with manager.track(worker):
+            return await forward.openai_passthrough(worker, "/v1/completions", body)
 
     @app.post("/v1/embeddings")
     async def v1_embeddings(request: Request) -> Any:
         body = await _json_body(request)
         info = await _resolve_model(body)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
-        return await forward.openai_passthrough(worker, "/v1/embeddings", body)
+        async with manager.track(worker):
+            return await forward.openai_passthrough(worker, "/v1/embeddings", body)
 
     return app

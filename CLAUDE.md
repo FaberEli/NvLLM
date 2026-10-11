@@ -22,9 +22,17 @@ user-facing doc; this file is for working on the code.
   regressed once.
 - `workers.py` — `WorkerManager`: one `vllm serve` subprocess per model.
   `_vllm_bin()` resolves the worker binary (next to the running interpreter, else
-  `PATH`). Only one non-judge model is resident at a time; the Router judge is
-  never evicted and never evicts. `_wait_ready` polls `/health`; the monitor
-  reaps crashed workers every 2s.
+  `PATH`). Up to `settings.max_models` non-judge models resident at once (default
+  `1`); on `ensure()` the least-valued residents are evicted to make room —
+  expired (past `keep-alive`) first, then least-recently-used; the Router judge is
+  never counted, never evicted, and never evicts. `Worker.inflight` tracks
+  in-flight requests; `track(worker)` (an async context manager) is how `main.py`
+  holds one so a `keep-alive=0` worker can't be killed mid-request. The monitor
+  (`_reap_once()`, every `monitor_interval` s) marks crashed workers errored and
+  unloads idle workers past their keep-alive (skipping the judge and any worker
+  with `inflight > 0`). Loading is serialized (the `ensure` lock spans spawn+
+  `_wait_ready`), so at most one model loads at a time; loaded models serve
+  concurrently.
 - `main.py` — FastAPI assembly; `create_app(settings)` is what tests target.
   `_resolve_model(body)` resolves the request's model — the `"auto"` alias
   triggers the Router (if `--router-judge` is set); otherwise it's `find_model`.
@@ -44,8 +52,12 @@ user-facing doc; this file is for working on the code.
   (`tests/conftest.py`). Real subprocess spawning is covered separately by
   `tests/test_workers.py`, which fakes the `vllm` binary so `ensure` actually
   spawns a process.
+- Reaping is tested **deterministically** by calling `WorkerManager._reap_once()`
+  directly (no sleeps): set `worker.expires_at` to the past to force expiry, and
+  toggle `worker.inflight` to exercise the mid-request protection.
 - `Settings` precedence is **CLI > env > default**; add new options to both
-  `config.py` and `cli.py`.
+  `config.py` and `cli.py`. (Internal knobs like `monitor_interval` are env-only,
+  matching `worker_max_num_seqs`/`worker_trust_remote_code` — no CLI flag needed.)
 - Workers bind `127.0.0.1` and speak OpenAI natively; the proxy rewrites only
   the `model` field on `/v1/*` passthrough.
 - Streaming helpers are async so connect-failures / worker 4xx surface as proper
