@@ -6,7 +6,7 @@ user-facing doc; this file is for working on the code.
 ## Running
 
 - Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q`
-- Dev server: `.venv/bin/python -m nvllm_service --hf-hub-root <cache> --port 8000`
+- Dev server (default bind `0.0.0.0:8004`): `.venv/bin/python -m nvllm_service --hf-hub-root <cache>`
 - Entry point: `nvllm_service.cli:main` (console script `nvllm-serve`).
 
 ## Layout

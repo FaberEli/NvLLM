@@ -15,7 +15,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Ollama-style resident inference service backed by vLLM.",
     )
     p.add_argument("--host", default=None, help="bind host (default $NVLLM_HOST or 0.0.0.0)")
-    p.add_argument("--port", type=int, default=None, help="bind port (default $NVLLM_PORT or 8000)")
+    p.add_argument("--port", type=int, default=None, help="bind port (default $NVLLM_PORT or 8004)")
     p.add_argument("--hf-hub-root", default=None, help="HuggingFace hub cache directory to scan")
     p.add_argument("--keep-alive", type=int, default=None, help="default idle seconds before unload (-1 keep, 0 immediate)")
     p.add_argument("--max-model-len", type=int, default=None, help="pass --max-model-len to workers")

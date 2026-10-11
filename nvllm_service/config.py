@@ -41,7 +41,7 @@ def default_hf_hub_root() -> Path:
 class Settings:
     # --- service ---
     host: str = field(default_factory=lambda: _env_str("NVLLM_HOST", "0.0.0.0"))
-    port: int = field(default_factory=lambda: _env_int("NVLLM_PORT", 8000))
+    port: int = field(default_factory=lambda: _env_int("NVLLM_PORT", 8004))
 
     # --- model discovery ---
     hf_hub_root: Path | None = field(default=None)  # None -> default_hf_hub_root()
