@@ -23,6 +23,24 @@ respawn.
   then the call is forwarded. Ollama bodies are translated to OpenAI and back,
   including streaming (OpenAI SSE in, Ollama NDJSON out).
 
+## Routing (auto model selection)
+
+Set `--router-judge` to a small, fast model (it stays resident and is never
+evicted). Then any inference request can use `model: "auto"`: the judge reads the
+request plus the list of servable models, picks the best one, and the service
+forwards to it. If the judge can't be consulted or returns something
+unrecognizable, the router falls back to the largest model rather than failing.
+
+```bash
+nvllm-serve --router-judge nvidia/NVIDIA-Nemotron-Nano-9B-v2-NVFP4
+
+curl -s localhost:8004/api/router | jq          # routing status + candidates
+curl -s localhost:8004/api/chat -d '{
+  "model": "auto",
+  "messages": [{"role": "user", "content": "hello"}]
+}'
+```
+
 ## Quickstart
 
 ```bash
@@ -85,6 +103,7 @@ Also honored by workers: `NVLLM_MAX_NUM_SEQS`, `NVLLM_TRUST_REMOTE_CODE`, and
 | POST | `/api/show` | Ollama — model info |
 | POST | `/api/chat`, `/api/generate` | Ollama — inference (stream + non-stream) |
 | POST | `/api/embed`, `/api/embeddings` | Ollama — embeddings |
+| GET | `/api/router` | routing status (judge + candidates) |
 | GET | `/v1/models` | OpenAI — list models |
 | POST | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` | OpenAI — inference |
 
@@ -101,4 +120,6 @@ runs without a GPU or a real vLLM install.
 
 - **M1** — catalog discovery + metadata API + worker process management. ✅
 - **M2** — inference proxy (Ollama + OpenAI, streaming). ✅
-- **Next** — Router / auto-routing (`--router-judge` plumbing), multi-model concurrency.
+- **M3** — Router / auto-routing (`--router-judge` + `model: "auto"`). ✅
+- **Next** — end-to-end NVFP4 smoke test on DGX Spark, multi-model concurrency,
+  throughput/latency tuning for NVFP4.

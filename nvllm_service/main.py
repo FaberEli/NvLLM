@@ -18,6 +18,7 @@ from . import __version__, forward
 from .catalog import Capability, ModelInfo
 from .config import Settings
 from .discovery import by_name, discover
+from .router import ROUTE_ALIAS, Router
 from .workers import Worker, WorkerManager
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.catalog = catalog
     app.state.manager = manager
+
+    # M3: Router — only active when a judge model is configured
+    router: Router | None = None
+    if settings.router_judge:
+        judge = by_name(catalog, settings.router_judge)
+        if judge is None or not judge.supported:
+            raise RuntimeError(f"router judge '{settings.router_judge}' is not a servable catalog model")
+        router = Router(judge=judge, candidates=[m for m in catalog if m.supported])
+        log.info("router enabled: judge=%s, %d candidate(s)", judge.name, len(router.candidates))
+    app.state.router = router
 
     @app.exception_handler(HTTPException)
     async def _ollama_style_errors(request: Request, exc: HTTPException) -> JSONResponse:
@@ -76,9 +87,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="JSON object expected")
         return body
 
-    def _model_of(body: dict) -> ModelInfo:
-        name = body.get("model") or body.get("name") or ""
-        return find_model(str(name))
+    def _request_text(body: dict) -> str:
+        """Extract the user's text for the router: last user message, else prompt/input."""
+        for m in reversed(body.get("messages") or []):
+            if isinstance(m, dict) and m.get("role") == "user":
+                c = m.get("content")
+                if isinstance(c, str):
+                    return c
+                if isinstance(c, list):
+                    return " ".join(
+                        p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"
+                    )
+        p = body.get("prompt")
+        if isinstance(p, str):
+            return p
+        i = body.get("input")
+        if isinstance(i, str):
+            return i
+        return ""
+
+    async def _resolve_model(body: dict) -> ModelInfo:
+        """Resolve the request's model; the 'auto' alias triggers the Router (if enabled)."""
+        name = str(body.get("model") or body.get("name") or "")
+        if name == ROUTE_ALIAS:
+            if router is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="routing not configured; set --router-judge to enable model='auto'",
+                )
+            judge_worker = await ensure(router.judge, keep_alive=-1)
+            chosen = await router.pick(judge_worker, _request_text(body))
+            log.info("routed 'auto' -> %s", chosen.name)
+            return chosen
+        return find_model(name)
 
     # ---- misc ---------------------------------------------------------
     @app.get("/", include_in_schema=False)
@@ -110,10 +151,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail='"model" is required')
         return find_model(str(name)).to_show()
 
+    @app.get("/api/router")
+    async def api_router() -> dict[str, Any]:
+        if router is None:
+            return {"enabled": False, "alias": ROUTE_ALIAS}
+        return {
+            "enabled": True,
+            "alias": ROUTE_ALIAS,
+            "judge": router.judge.name,
+            "candidates": [m.name for m in router.candidates],
+        }
+
     @app.post("/api/chat")
     async def api_chat(request: Request):
         body = await _json_body(request)
-        info = _model_of(body)
+        info = await _resolve_model(body)
         require(info, Capability.COMPLETION)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         oai = forward.openai_chat_body(info.name, body)
@@ -126,7 +178,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/generate")
     async def api_generate(request: Request):
         body = await _json_body(request)
-        info = _model_of(body)
+        info = await _resolve_model(body)
         require(info, Capability.COMPLETION)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         oai = forward.openai_completions_body(info.name, body)
@@ -139,7 +191,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/embed")
     async def api_embed(request: Request):
         body = await _json_body(request)
-        info = _model_of(body)
+        info = await _resolve_model(body)
         require(info, Capability.EMBEDDING)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         inp = body.get("input")
@@ -154,7 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/embeddings")
     async def api_embeddings(request: Request):
         body = await _json_body(request)
-        info = _model_of(body)
+        info = await _resolve_model(body)
         require(info, Capability.EMBEDDING)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         prompt = body.get("prompt")
@@ -175,21 +227,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/chat/completions")
     async def v1_chat_completions(request: Request) -> Any:
         body = await _json_body(request)
-        info = _model_of(body)
+        info = await _resolve_model(body)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         return await forward.openai_passthrough(worker, "/v1/chat/completions", body)
 
     @app.post("/v1/completions")
     async def v1_completions(request: Request) -> Any:
         body = await _json_body(request)
-        info = _model_of(body)
+        info = await _resolve_model(body)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         return await forward.openai_passthrough(worker, "/v1/completions", body)
 
     @app.post("/v1/embeddings")
     async def v1_embeddings(request: Request) -> Any:
         body = await _json_body(request)
-        info = _model_of(body)
+        info = await _resolve_model(body)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         return await forward.openai_passthrough(worker, "/v1/embeddings", body)
 

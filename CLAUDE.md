@@ -26,10 +26,16 @@ user-facing doc; this file is for working on the code.
   never evicted and never evicts. `_wait_ready` polls `/health`; the monitor
   reaps crashed workers every 2s.
 - `main.py` — FastAPI assembly; `create_app(settings)` is what tests target.
-  Endpoints resolve the model, `ensure()` a worker, then delegate to `forward`.
+  `_resolve_model(body)` resolves the request's model — the `"auto"` alias
+  triggers the Router (if `--router-judge` is set); otherwise it's `find_model`.
+  Endpoints then `ensure()` a worker and delegate to `forward`.
 - `forward.py` — Ollama↔OpenAI translation + streaming (OpenAI SSE in, Ollama
   NDJSON out). Keep it worker-agnostic: it only needs a `Worker` exposing
   `base_url` and `name`.
+- `router.py` — `Router`: the judge model picks a target from the candidates.
+  `pick()` calls the judge via `forward.forward_json`, `parse_choice()` resolves
+  its free-text reply (verbatim `org/name` first, bare name as a whole token),
+  `fallback()` is the largest candidate. `ROUTE_ALIAS` = `"auto"`.
 - `cli.py` — argparse entry. Keep it in sync with `config.py` when adding flags.
 
 ## Conventions / gotchas
