@@ -27,8 +27,11 @@ user-facing doc; this file is for working on the code.
   expired (past `keep-alive`) first, then least-recently-used; the Router judge is
   never counted, never evicted, and never evicts. `Worker.inflight` tracks
   in-flight requests; `track(worker)` (an async context manager) is how `main.py`
-  holds one so a `keep-alive=0` worker can't be killed mid-request. The monitor
-  (`_reap_once()`, every `monitor_interval` s) marks crashed workers errored and
+  holds one during the request, and the **streaming** forwards in `forward.py`
+  hold it themselves for the stream's lifetime (a streaming body is delivered
+  *after* the endpoint returns, outside `track()`'s window — so a `keep-alive=0`
+  worker is never reaped mid-stream). The monitor (`_reap_once()`, every
+  `monitor_interval` s) marks crashed workers errored and
   unloads idle workers past their keep-alive (skipping the judge and any worker
   with `inflight > 0`). Loading is serialized (the `ensure` lock spans spawn+
   `_wait_ready`), so at most one model loads at a time; loaded models serve
@@ -39,7 +42,9 @@ user-facing doc; this file is for working on the code.
   Endpoints then `ensure()` a worker and delegate to `forward`.
 - `forward.py` — Ollama↔OpenAI translation + streaming (OpenAI SSE in, Ollama
   NDJSON out). Keep it worker-agnostic: it only needs a `Worker` exposing
-  `base_url` and `name`.
+  `base_url`, `name`, and `inflight` (streaming forwards hold `inflight` for the
+  stream's lifetime so a `keep-alive=0` worker can't be reaped mid-stream — see
+  `tests/test_forward_stream.py`).
 - `router.py` — `Router`: the judge model picks a target from the candidates.
   `pick()` calls the judge via `forward.forward_json`, `parse_choice()` resolves
   its free-text reply (verbatim `org/name` first, bare name as a whole token),

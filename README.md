@@ -35,8 +35,16 @@ request plus the list of servable models, picks the best one, and the service
 forwards to it. If the judge can't be consulted or returns something
 unrecognizable, the router falls back to the largest model rather than failing.
 
+> **Pick a non-reasoning judge.** A judge that emits chain-of-thought (reasoning
+> models) instead of a bare model name will not parse cleanly and will fall back.
+> A small, well-instructed non-reasoning model (e.g. `Llama-3.1-8B-Instruct`)
+> routes cleanly. Constrain the candidates with `--router-candidates` so the judge
+> can only pick models that actually fit in memory.
+
 ```bash
-nvllm-serve --router-judge nvidia/NVIDIA-Nemotron-Nano-9B-v2-NVFP4
+nvllm-serve \
+  --router-judge nvidia/Llama-3.1-8B-Instruct-NVFP4 \
+  --router-candidates "nvidia/Qwen3-8B-NVFP4,nvidia/Qwen3-14B-NVFP4"
 
 curl -s localhost:8004/api/router | jq          # routing status + candidates
 curl -s localhost:8004/api/chat -d '{
@@ -89,6 +97,7 @@ Precedence: **CLI flag > environment variable > default**.
 | `--max-model-len` | `NVLLM_MAX_MODEL_LEN` | (vLLM default) | passed to workers |
 | `--gpu-memory-utilization` | `NVLLM_GPU_MEMORY_UTILIZATION` | `0.5` | passed to workers |
 | `--router-judge` | `NVLLM_ROUTER_JUDGE` | — | model name to act as the Router judge |
+| `--router-candidates` | `NVLLM_ROUTER_CANDIDATES` | all supported | comma-separated repos the Router may route to (keeps it from picking a model that won't fit in memory) |
 
 Also honored by workers: `NVLLM_MAX_NUM_SEQS`, `NVLLM_TRUST_REMOTE_CODE`,
 `NVLLM_WORKER_MAX_JOBS`, and `NVLLM_WORKER_EXTRA_ARGS` (raw args appended to every
@@ -129,6 +138,20 @@ NVLLM_MAX_MODELS=2 NVLLM_GPU_MEMORY_UTILIZATION=0.35 .venv/bin/python -m nvllm_s
   default `U=0.5`, two workers already claim the whole 128G. For `N` models use
   roughly `U ≈ headroom / N` (e.g. `N=2 → U≈0.35`).
 
+## Security
+
+The service exposes model inference over HTTP and has **no built-in
+authentication**. By default it binds `0.0.0.0` (all interfaces) on port `8004`,
+so on a multi-host machine anyone on the network can use your GPUs.
+
+- Keep it on a trusted network, or bind a specific interface:
+  `--host 127.0.0.1` (local only) or `--host 192.168.1.10`.
+- If you must expose it, put it behind a reverse proxy / VPN / firewall and add
+  your own auth there. This service does not verify callers.
+
+Workers (the `vllm serve` subprocesses) always bind `127.0.0.1` regardless of
+`--host`, so only this service is directly reachable.
+
 ## Endpoints
 
 | Method | Path | API |
@@ -162,5 +185,8 @@ runs without a GPU or a real vLLM install.
 - **M5** — multi-model concurrency: `--max-models` (co-located non-judge models,
   LRU/expired-first eviction), `keep-alive` expiry reaping, and in-flight protection
   so a request is never cut off. ✅
-- **Next** — throughput/latency tuning for NVFP4, and a Router smoke test with a
-  real judge model.
+- **M6** — Router hardening (judge-residency fix, `--router-candidates` whitelist,
+  short-name parsing) plus NVFP4 throughput/latency benchmark and a real-judge
+  Router smoke test on DGX Spark (see [`bench/REPORT.md`](bench/REPORT.md)). ✅
+- **M7** — deep code review (streaming in-flight protection fix, dead-config and
+  version cleanup) and open-source packaging (LICENSE, security notes, docs). ✅

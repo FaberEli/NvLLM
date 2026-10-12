@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import __version__ as _PKG_VERSION
+
 
 def _env_str(name: str, default: str | None = None) -> str | None:
     v = os.environ.get(name)
@@ -53,7 +55,6 @@ class Settings:
     # 1 = one model at a time (default; safe on shared/unified memory like DGX Spark). Raise it to
     # co-locate models, and lower worker_gpu_memory_utilization accordingly so they fit.
     max_models: int = field(default_factory=lambda: max(1, _env_int("NVLLM_MAX_MODELS", 1)))
-    max_queue: int = field(default_factory=lambda: _env_int("NVLLM_MAX_QUEUE", 32))
     load_timeout: float = field(default_factory=lambda: _env_float("NVLLM_LOAD_TIMEOUT", 1800.0))
     # how often the monitor reaps crashed / expired workers (seconds)
     monitor_interval: float = field(default_factory=lambda: _env_float("NVLLM_MONITOR_INTERVAL", 2.0))
@@ -87,7 +88,7 @@ class Settings:
 
     # --- misc ---
     log_dir: Path | None = field(default=None)  # None -> <service_dir>/logs
-    version: str = field(default_factory=lambda: _env_str("NVLLM_VERSION", "0.1.0"))
+    version: str = field(default_factory=lambda: _env_str("NVLLM_VERSION") or _PKG_VERSION)
 
     def hub_root(self) -> Path:
         return self.hf_hub_root or default_hf_hub_root()

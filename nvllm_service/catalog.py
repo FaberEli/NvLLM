@@ -1,7 +1,6 @@
 """Model metadata: one entry per discovered HuggingFace cache model."""
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -107,7 +106,3 @@ class ModelInfo:
             },
             "modified_at": (self.modified_at or datetime.now(timezone.utc)).isoformat(),
         }
-
-    @property
-    def ts(self) -> float:
-        return time.time()

@@ -188,7 +188,13 @@ async def forward_json(worker: Worker, path: str, body: dict) -> Any:
 
 
 async def openai_passthrough(worker: Worker, path: str, body: dict) -> StreamingResponse:
-    """Forward an OpenAI request, streaming the worker's bytes back verbatim."""
+    """Forward an OpenAI request, streaming the worker's bytes back verbatim.
+
+    Holds the worker's in-flight reference for the whole stream (released in the
+    generator's ``finally``). The response body is delivered *after* the endpoint
+    returns — outside the endpoint's own ``track()`` window — so without this a
+    ``keep-alive=0`` worker could be reaped by the monitor mid-stream.
+    """
     payload = dict(body)
     payload["model"] = worker.name
     client = httpx.AsyncClient(timeout=_STREAM_TIMEOUT)
@@ -203,6 +209,7 @@ async def openai_passthrough(worker: Worker, path: str, body: dict) -> Streaming
         await client.aclose()
         raise exc
     media_type = resp.headers.get("content-type", "application/json")
+    worker.inflight += 1
 
     async def gen() -> AsyncIterator[bytes]:
         try:
@@ -211,6 +218,7 @@ async def openai_passthrough(worker: Worker, path: str, body: dict) -> Streaming
         finally:
             await resp.aclose()
             await client.aclose()
+            worker.inflight = max(0, worker.inflight - 1)
 
     return StreamingResponse(gen(), media_type=media_type)
 
@@ -344,35 +352,43 @@ class _ChatStreamAcc:
 
 
 async def ollama_chat_stream(worker: Worker, model_name: str, oai_body: dict, t0: float) -> StreamingResponse:
-    """Streaming chat: OpenAI SSE in, Ollama NDJSON out."""
+    """Streaming chat: OpenAI SSE in, Ollama NDJSON out.
+
+    Holds the worker's in-flight reference for the whole stream (released in the
+    generator's ``finally``) so the monitor cannot reap a ``keep-alive=0`` worker
+    while the response is still being delivered.
+    """
     resp, client = await _openai_stream(worker, "/v1/chat/completions", oai_body)
     acc = _ChatStreamAcc()
     created = _now_iso()
+    worker.inflight += 1
 
     async def gen() -> AsyncIterator[bytes]:
-        yield _ndjson({"model": model_name, "created_at": created, "message": {"role": "assistant", "content": ""}, "done": False})
         try:
-            async for evt in _iter_sse_events(resp):
-                for msg in acc.apply(evt):
-                    yield _ndjson({"model": model_name, "message": msg, "done": False})
-            prompt_tokens, completion_tokens = _usage_counts(acc.usage)
-            yield _ndjson(
-                {
-                    "model": model_name,
-                    "message": {"role": "assistant"},
-                    "done": True,
-                    "done_reason": _finish_reason(acc.finish),
-                    "total_duration": int((time.time() - t0) * 1e9),
-                    "prompt_eval_count": prompt_tokens,
-                    "eval_count": completion_tokens,
-                }
-            )
-        except httpx.HTTPError as e:
-            log.error("chat stream from worker %s interrupted: %s", worker.name, e)
-            yield _ndjson({"model": model_name, "error": f"stream interrupted: {e}", "done": False})
+            yield _ndjson({"model": model_name, "created_at": created, "message": {"role": "assistant", "content": ""}, "done": False})
+            try:
+                async for evt in _iter_sse_events(resp):
+                    for msg in acc.apply(evt):
+                        yield _ndjson({"model": model_name, "message": msg, "done": False})
+                prompt_tokens, completion_tokens = _usage_counts(acc.usage)
+                yield _ndjson(
+                    {
+                        "model": model_name,
+                        "message": {"role": "assistant"},
+                        "done": True,
+                        "done_reason": _finish_reason(acc.finish),
+                        "total_duration": int((time.time() - t0) * 1e9),
+                        "prompt_eval_count": prompt_tokens,
+                        "eval_count": completion_tokens,
+                    }
+                )
+            except httpx.HTTPError as e:
+                log.error("chat stream from worker %s interrupted: %s", worker.name, e)
+                yield _ndjson({"model": model_name, "error": f"stream interrupted: {e}", "done": False})
         finally:
             await resp.aclose()
             await client.aclose()
+            worker.inflight = max(0, worker.inflight - 1)
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 
@@ -395,40 +411,49 @@ def ollama_generate_response(model_name: str, oai_resp: dict, t0: float) -> dict
 
 
 async def ollama_generate_stream(worker: Worker, model_name: str, oai_body: dict, t0: float) -> StreamingResponse:
+    """Streaming completions: OpenAI SSE in, Ollama NDJSON out.
+
+    Holds the worker's in-flight reference for the whole stream (released in the
+    generator's ``finally``) so the monitor cannot reap a ``keep-alive=0`` worker
+    while the response is still being delivered.
+    """
     resp, client = await _openai_stream(worker, "/v1/completions", oai_body)
     created = _now_iso()
+    worker.inflight += 1
 
     async def gen() -> AsyncIterator[bytes]:
-        yield _ndjson({"model": model_name, "created_at": created, "response": "", "done": False})
         try:
-            finish: str | None = None
-            usage: dict | None = None
-            async for evt in _iter_sse_events(resp):
-                for choice in evt.get("choices") or []:
-                    if choice.get("finish_reason"):
-                        finish = choice["finish_reason"]
-                    text = (choice.get("delta") or {}).get("text") or choice.get("text")
-                    if text:
-                        yield _ndjson({"model": model_name, "response": text, "done": False})
-                if isinstance(evt.get("usage"), dict):
-                    usage = evt["usage"]
-            prompt_tokens, completion_tokens = _usage_counts(usage)
-            yield _ndjson(
-                {
-                    "model": model_name,
-                    "response": "",
-                    "done": True,
-                    "done_reason": _finish_reason(finish),
-                    "total_duration": int((time.time() - t0) * 1e9),
-                    "prompt_eval_count": prompt_tokens,
-                    "eval_count": completion_tokens,
-                }
-            )
-        except httpx.HTTPError as e:
-            log.error("generate stream from worker %s interrupted: %s", worker.name, e)
-            yield _ndjson({"model": model_name, "error": f"stream interrupted: {e}", "done": False})
+            yield _ndjson({"model": model_name, "created_at": created, "response": "", "done": False})
+            try:
+                finish: str | None = None
+                usage: dict | None = None
+                async for evt in _iter_sse_events(resp):
+                    for choice in evt.get("choices") or []:
+                        if choice.get("finish_reason"):
+                            finish = choice["finish_reason"]
+                        text = (choice.get("delta") or {}).get("text") or choice.get("text")
+                        if text:
+                            yield _ndjson({"model": model_name, "response": text, "done": False})
+                    if isinstance(evt.get("usage"), dict):
+                        usage = evt["usage"]
+                prompt_tokens, completion_tokens = _usage_counts(usage)
+                yield _ndjson(
+                    {
+                        "model": model_name,
+                        "response": "",
+                        "done": True,
+                        "done_reason": _finish_reason(finish),
+                        "total_duration": int((time.time() - t0) * 1e9),
+                        "prompt_eval_count": prompt_tokens,
+                        "eval_count": completion_tokens,
+                    }
+                )
+            except httpx.HTTPError as e:
+                log.error("generate stream from worker %s interrupted: %s", worker.name, e)
+                yield _ndjson({"model": model_name, "error": f"stream interrupted: {e}", "done": False})
         finally:
             await resp.aclose()
             await client.aclose()
+            worker.inflight = max(0, worker.inflight - 1)
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
