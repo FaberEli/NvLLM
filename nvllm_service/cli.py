@@ -3,10 +3,33 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import shutil
 import sys
 
+from . import __version__
 from .config import Settings
 from .main import create_app
+
+
+def _preflight_vllm() -> None:
+    """Fail fast, with actionable guidance, if the vLLM engine binary is missing.
+
+    Without this, the absence of vLLM would only surface on the first request,
+    deep inside worker spawn (a confusing 'worker exited' error). Reuses the
+    same resolution the worker manager uses, so what we check is what we'd run.
+    """
+    from .workers import _vllm_bin
+
+    bin_path = _vllm_bin()
+    if not os.path.isabs(bin_path) and shutil.which(bin_path) is None:
+        sys.exit(
+            "nvllm-serve: the vLLM engine was not found on this system.\n"
+            "  Install it with the one-click installer (from this repo):\n"
+            "      scripts/install.sh\n"
+            "  or, in the same Python environment as nvllm-serve:\n"
+            "      pip install 'vllm==0.31.0'   # validated baseline; see README\n"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -14,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="nvllm-serve",
         description="Ollama-style resident inference service backed by vLLM.",
     )
+    p.add_argument("--version", action="version", version=f"nvllm-serve {__version__}")
     p.add_argument("--host", default=None, help="bind host (default $NVLLM_HOST or 0.0.0.0)")
     p.add_argument("--port", type=int, default=None, help="bind port (default $NVLLM_PORT or 8004)")
     p.add_argument("--hf-hub-root", default=None, help="HuggingFace hub cache directory to scan")
@@ -52,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.router_candidates:
         s.router_candidates = [c.strip() for c in args.router_candidates.split(",") if c.strip()]
 
+    _preflight_vllm()
     app = create_app(s)
 
     import uvicorn

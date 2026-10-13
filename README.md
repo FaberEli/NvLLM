@@ -53,13 +53,62 @@ curl -s localhost:8004/api/chat -d '{
 }'
 ```
 
+## Installation
+
+### One-click (recommended)
+
+Prerequisites: **Linux** (validated on DGX Spark GB10, aarch64) with a CUDA
+GPU, and **Python ≥ 3.11**.
+
+```bash
+git clone https://github.com/FaberEli/NvLLM.git && cd NvLLM
+./scripts/install.sh
+```
+
+The installer:
+
+1. creates a self-contained install root at `~/.nvllm/` (venv + logs + metadata);
+2. **pulls the vLLM engine** — pinned to the validated baseline **`vllm==0.31.0`**
+   (with its matching torch build for CUDA 13.0); override with `--vllm-version V`;
+3. installs `nvllm-serve` itself + its (small) Python dependencies;
+4. symlinks `nvllm-serve` into `~/.local/bin`;
+5. optionally installs a systemd **user** service (autostart, restart-on-crash):
+   `./scripts/install.sh --with-service`.
+
+It is idempotent — re-running it upgrades in place.
+
+### Updating
+
+```bash
+./scripts/update.sh                 # updates nvllm-serve; keeps vLLM pinned
+./scripts/update.sh --upgrade-vllm  # also follow the latest vLLM release
+```
+
+### Uninstalling (restores the environment)
+
+```bash
+./scripts/uninstall.sh              # stops the service, removes ~/.nvllm/ + the PATH symlink
+./scripts/uninstall.sh --purge      # …and also deletes the model/JIT caches (destructive)
+```
+
+By default your **model weights and caches are kept** — the script lists what it
+removes and what it keeps before asking.
+
+### Development install
+
+Work from the repo with an editable venv instead:
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev]"
+pip install "vllm==0.31.0"          # the engine (validated baseline)
+python -m pytest -q                 # 57 tests, no GPU needed
+```
+
 ## Quickstart
 
 ```bash
 # default bind is 0.0.0.0:8004
-# from the service/ directory
-.venv/bin/python -m nvllm_service
-# or, once installed (pip install -e .):
 nvllm-serve
 ```
 
@@ -169,11 +218,23 @@ Workers (the `vllm serve` subprocesses) always bind `127.0.0.1` regardless of
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q
+pip install -e ".[dev]"
+python -m pytest -q
 ```
 
-The suite uses a fake HF hub cache and a stub OpenAI-compatible worker, so it
-runs without a GPU or a real vLLM install.
+The suite (57 tests) uses a fake HF hub cache and a stub OpenAI-compatible
+worker, so it runs without a GPU or a real vLLM install — it also runs in CI.
+
+## Licensing
+
+nvllm-serve is licensed under the **Apache License 2.0** (see [LICENSE](LICENSE)).
+
+**Runtime dependency:** nvllm-serve requires a **vLLM** installation
+([Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)). It launches
+`vllm serve` as a **subprocess** and talks to it over HTTP — it does **not**
+bundle or import vLLM's source code. The two are therefore independent programs
+(analogous to Ollama ↔ llama.cpp); vLLM is a runtime prerequisite, not a code
+dependency of this repository.
 
 ## Milestones
 

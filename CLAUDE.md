@@ -8,6 +8,11 @@ user-facing doc; this file is for working on the code.
 - Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q`
 - Dev server (default bind `0.0.0.0:8004`): `.venv/bin/python -m nvllm_service --hf-hub-root <cache>`
 - Entry point: `nvllm_service.cli:main` (console script `nvllm-serve`).
+- Production install (for users): `scripts/install.sh` — venv + `vllm==0.31.0` (pinned
+  validated baseline) into `~/.nvllm/`, symlink in `~/.local/bin`, optional systemd
+  user service (`--with-service`). `scripts/update.sh` upgrades (vLLM stays pinned
+  unless `--upgrade-vllm`); `scripts/uninstall.sh` restores the environment
+  (models/caches kept unless `--purge`). All honor `NVLLM_HOME` to relocate the root.
 
 ## Layout
 
@@ -77,3 +82,11 @@ user-facing doc; this file is for working on the code.
   `--disable-log-requests` and groups CLI help into "Config Groups" (probe a flag
   with `vllm serve --help=<flag>`). Don't re-add removed flags to the worker cmd —
   a worker that exits `rc=1` during startup is usually an unrecognized argument.
+- **Worker log dir**: `NVLLM_LOG_DIR` (env-only, read by `Settings.from_env()`;
+  default `~/.local/share/nvllm-serve/logs`). `install.sh` / the systemd unit set it
+  to `<install_root>/logs` so an uninstall removes logs with the rest.
+- **Startup preflight**: `cli.main` exits early with actionable guidance when the
+  `vllm` binary cannot be resolved (`_preflight_vllm`, reuses `workers._vllm_bin()`;
+  tests build the app directly and never hit it).
+- **CI**: `.github/workflows/ci.yml` runs the suite on ubuntu / Python 3.12 — keep
+  the test suite GPU-free and vLLM-free (stub worker + fake hub cache).

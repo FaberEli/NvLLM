@@ -87,7 +87,7 @@ class Settings:
     router_candidates: list[str] = field(default_factory=list)
 
     # --- misc ---
-    log_dir: Path | None = field(default=None)  # None -> <service_dir>/logs
+    log_dir: Path | None = field(default=None)  # worker log dir; $NVLLM_LOG_DIR (set by install/systemd); None -> ~/.local/share/nvllm-serve/logs
     version: str = field(default_factory=lambda: _env_str("NVLLM_VERSION") or _PKG_VERSION)
 
     def hub_root(self) -> Path:
@@ -109,4 +109,7 @@ class Settings:
         cands = os.environ.get("NVLLM_ROUTER_CANDIDATES", "")
         if cands:
             s.router_candidates = [c.strip() for c in cands.split(",") if c.strip()]
+        log_dir = os.environ.get("NVLLM_LOG_DIR", "")
+        if log_dir:
+            s.log_dir = Path(log_dir).expanduser()
         return s
