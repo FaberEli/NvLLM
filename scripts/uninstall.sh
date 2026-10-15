@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# nvllm-serve — one-click uninstall + environment restore
+# nvllm — one-click uninstall + environment restore
 #
 # Stops the systemd user service (if installed), terminates the running
-# nvllm-serve service and its `vllm serve` workers (matched strictly to THIS
+# nvllm service and its `vllm serve` workers (matched strictly to THIS
 # install root), removes the install root (venv + logs + metadata), and removes
-# the ~/.local/bin/nvllm-serve symlink — restoring the environment to its
+# the ~/.local/bin/{nvllm,nvllm-serve} symlinks — restoring the environment to its
 # pre-install state.
 #
 # User assets are KEPT by default: the HuggingFace model cache (your NVFP4
@@ -44,15 +44,18 @@ done
 [ -e "$ROOT" ] || { warn "no install found at $ROOT — nothing to remove"; exit 0; }
 
 # -------------------------------------------------------------------- service ---
-if [ -f "$HOME/.config/systemd/user/nvllm-serve.service" ]; then
-  log "disabling + stopping systemd user service"
-  systemctl --user disable --now nvllm-serve 2>/dev/null || true
-  rm -f "$HOME/.config/systemd/user/nvllm-serve.service"
-  systemctl --user daemon-reload
-fi
+# (both the current nvllm unit and the legacy nvllm-serve unit)
+for unit in nvllm.service nvllm-serve.service; do
+  if [ -f "$HOME/.config/systemd/user/$unit" ]; then
+    log "disabling + stopping systemd user service (${unit%.service})"
+    systemctl --user disable --now "${unit%.service}" 2>/dev/null || true
+    rm -f "$HOME/.config/systemd/user/$unit"
+    systemctl --user daemon-reload
+  fi
+done
 
 # -------------------------------------------------------------------- workers ---
-log "stopping any running nvllm-serve / vllm workers under $ROOT"
+log "stopping any running nvllm / vllm workers under $ROOT"
 # Match strictly on this install root's venv bin dir so a dev .venv or other
 # Python installs are never touched. `pkill -f` sees the full command line.
 PAT="$ROOT/venv/bin/"
@@ -79,7 +82,7 @@ fi
 if [ "$ASSUME_YES" -ne 1 ]; then
   echo "This will remove:"
   echo "  $ROOT   (venv: vLLM + torch + nvllm-serve, logs, install metadata)"
-  echo "  $HOME/.local/bin/nvllm-serve   (symlink)"
+  echo "  $HOME/.local/bin/nvllm, $HOME/.local/bin/nvllm-serve   (symlinks)"
   if [ "$PURGE" -eq 1 ]; then
     echo "  plus, with --purge:"
     for d in "${KEPT[@]}"; do echo "  $d"; done
@@ -102,11 +105,11 @@ if [ "$ASSUME_YES" -ne 1 ]; then
 fi
 
 # ----------------------------------------------------------------------- remove ---
-# Remove the PATH symlink FIRST, while its target still exists, so we can tell
-# it belongs to this install (a raw readlink works on the first hop even if the
+# Remove the PATH symlinks FIRST, while their targets still exist, so we can tell
+# they belong to this install (a raw readlink works on the first hop even if the
 # link later dangles).
-LINK="$HOME/.local/bin/nvllm-serve"
-if [ -L "$LINK" ]; then
+for LINK in "$HOME/.local/bin/nvllm-serve" "$HOME/.local/bin/nvllm"; do
+  [ -L "$LINK" ] || continue
   target="$(readlink "$LINK" 2>/dev/null || true)"
   case "$target" in
     "$ROOT"/*|"$ROOT")
@@ -115,7 +118,7 @@ if [ -L "$LINK" ]; then
     *)
       warn "symlink $LINK points elsewhere ($target) — leaving it alone" ;;
   esac
-fi
+done
 
 log "removing install root: $ROOT"
 rm -rf "$ROOT"

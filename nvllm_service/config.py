@@ -88,6 +88,10 @@ class Settings:
 
     # --- misc ---
     log_dir: Path | None = field(default=None)  # worker log dir; $NVLLM_LOG_DIR (set by install/systemd); None -> ~/.local/share/nvllm-serve/logs
+    # ⚠️ field `state_root` (Path|None) vs METHOD `state_dir()` — different names on
+    # purpose (same pattern as hf_hub_root / hub_root): a field and a method can
+    # never share a name on this dataclass.
+    state_root: Path | None = field(default=None)  # $NVLLM_STATE_DIR (set by install/systemd); None -> ~/.local/share/nvllm-serve
     version: str = field(default_factory=lambda: _env_str("NVLLM_VERSION") or _PKG_VERSION)
 
     def hub_root(self) -> Path:
@@ -97,6 +101,11 @@ class Settings:
         if self.log_dir:
             return Path(self.log_dir)
         return Path.home() / ".local" / "share" / "nvllm-serve" / "logs"
+
+    def state_dir(self) -> Path:
+        if self.state_root:
+            return Path(self.state_root)
+        return Path.home() / ".local" / "share" / "nvllm-serve"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -112,4 +121,7 @@ class Settings:
         log_dir = os.environ.get("NVLLM_LOG_DIR", "")
         if log_dir:
             s.log_dir = Path(log_dir).expanduser()
+        state_dir = os.environ.get("NVLLM_STATE_DIR", "")
+        if state_dir:
+            s.state_root = Path(state_dir).expanduser()
         return s

@@ -5,14 +5,28 @@ user-facing doc; this file is for working on the code.
 
 ## Running
 
-- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q`
-- Dev server (default bind `0.0.0.0:8004`): `.venv/bin/python -m nvllm_service --hf-hub-root <cache>`
-- Entry point: `nvllm_service.cli:main` (console script `nvllm-serve`).
+- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (135 tests)
+- Dev server (default bind `0.0.0.0:8004`): `nvllm serve` or
+  `.venv/bin/python -m nvllm_service serve --hf-hub-root <cache>`
+- **Single entry (0.3.0, breaking):** `nvllm` (= `nvllm_service.cli:main`) and
+  `python -m nvllm_service` are the same Ollama-style CLI:
+  `serve`/`list`/`run`/`ps`/`stop`/`show`/`launch`/`version`; no args → help.
+  The legacy `nvllm-serve` binary was **removed on purpose** (early-stage project;
+  no compat layer) — `install.sh` retires old symlinks/units.
+- CLI client commands talk to a running server (default `http://127.0.0.1:8004`,
+  `NVLLM_SERVER` env / `--server` flag). They must NOT require vLLM locally and
+  must NOT call `_preflight_vllm`.
 - Production install (for users): `scripts/install.sh` — venv + `vllm==0.31.0` (pinned
   validated baseline) into `~/.nvllm/`, symlink in `~/.local/bin`, optional systemd
   user service (`--with-service`). `scripts/update.sh` upgrades (vLLM stays pinned
   unless `--upgrade-vllm`); `scripts/uninstall.sh` restores the environment
   (models/caches kept unless `--purge`). All honor `NVLLM_HOME` to relocate the root.
+- **Self-contained release (0.4.0):** `scripts/build-release.sh` builds
+  `dist/nvllm-<ver>-linux-aarch64/` (install.sh + prebuilt `venv/` with vLLM +
+  non-editable nvllm + LICENSE/README) → tarball. `scripts/bootstrap.sh` is the
+  `curl|bash` front-end (download → extract → bundled install.sh). install.sh
+  auto-detects a sibling `venv/` (the staging layout) and **skips pip** — keep
+  that layout (install.sh next to venv/) if you change the build script.
 
 ## Layout
 
@@ -24,7 +38,14 @@ user-facing doc; this file is for working on the code.
   `hub_root()` is the **method** that applies the default.
   ⚠️ **Call `hub_root()`, not `hf_hub_root()`** — the field is a `Path` (or
   `None`), so calling it raises `TypeError`. This is a known footgun that
-  regressed once.
+  regressed once. Same pattern again: `state_root` (field) + `state_dir()`
+  (method; env `NVLLM_STATE_DIR`, default `~/.local/share/nvllm-serve`) — the
+  field *cannot* share the method's name, so it is deliberately `state_root`.
+- `created.py` — `CreatedModel` (name/base/system/options/created_at) +
+  `CreatedStore`: the virtual-model store (`created.json`, atomic tmp+rename
+  write; `list/get/names/create/delete`). Pure stdlib, independently testable.
+  A created model is **metadata only** — it resolves to the base catalog model
+  (shares its worker); the wrapper is injected per request in `main.py`.
 - `workers.py` — `WorkerManager`: one `vllm serve` subprocess per model.
   `_vllm_bin()` resolves the worker binary (next to the running interpreter, else
   `PATH`). Up to `settings.max_models` non-judge models resident at once (default
@@ -42,9 +63,22 @@ user-facing doc; this file is for working on the code.
   `_wait_ready`), so at most one model loads at a time; loaded models serve
   concurrently.
 - `main.py` — FastAPI assembly; `create_app(settings)` is what tests target.
-  `_resolve_model(body)` resolves the request's model — the `"auto"` alias
-  triggers the Router (if `--router-judge` is set); otherwise it's `find_model`.
-  Endpoints then `ensure()` a worker and delegate to `forward`.
+  `_resolve_model(body)` resolves the request's model — **registered aliases**
+  (`app.state.model_aliases`, set via `POST /v1/aliases`) are mapped back to the
+  real catalog model first, then the `"auto"` alias triggers the Router (if
+  `--router-judge` is set); otherwise it's `find_model`. All inference endpoints
+  share this one resolution path. Endpoints then `ensure()` a worker and delegate
+  to `forward`.
+  **Virtual models (0.4.0):** `app.state.created = CreatedStore(...)`;
+  `_resolve_with_spec(body)` = alias/auto resolution + created-model check
+  (virtual name → rewrite `body["model"]` to the base; returns the
+  `CreatedModel` or `None`). `/api/chat`, `/v1/chat/completions`,
+  `/v1/messages` then `_inject_*_spec()` (system message/field + option merge,
+  request options win) and echo the **requested** name in the response.
+  `POST /api/create` / `POST /api/rm` manage the store (rm only for created
+  models; anything else 404 — the CLI turns that into HF-cache-delete guidance).
+  `/api/tags` + `/v1/models` + `/api/show` list created models
+  (`details.parent_model` = base).
 - `forward.py` — Ollama↔OpenAI translation + streaming (OpenAI SSE in, Ollama
   NDJSON out). Keep it worker-agnostic: it only needs a `Worker` exposing
   `base_url`, `name`, and `inflight` (streaming forwards hold `inflight` for the
@@ -54,7 +88,44 @@ user-facing doc; this file is for working on the code.
   `pick()` calls the judge via `forward.forward_json`, `parse_choice()` resolves
   its free-text reply (verbatim `org/name` first, bare name as a whole token),
   `fallback()` is the largest candidate. `ROUTE_ALIAS` = `"auto"`.
-- `cli.py` — argparse entry. Keep it in sync with `config.py` when adding flags.
+- `cli.py` — the single entry. `run_server()` is the server body (flags — keep in
+  sync with `config.py` when adding flags); `main()` dispatches subcommands;
+  `_REFUSALS` holds the polite refusals for `pull`/`push`/`login`/`cp` — **do not
+  implement real download/publish** (models live in the HF cache; that is a
+  deliberate NvLLM trait). `create` and `rm` are **real subcommands** since 0.4.0:
+  `create NAME --from MODEL [--system …] [--temperature …] [--top-p …]
+  [--num-predict …]` and `rm NAME` (rm on a non-created model still prints the
+  HF-cache-delete guidance, via the server 404).
+- `client.py` — the Ollama-style client commands (list/ps/show/run/stop/version/
+  create/rm). Synchronous `httpx` (CLI is a foreground process; no event loop).
+  `repl()` takes injectable `in_fn`/`out_fn` so tests script the whole session.
+  0.4.0 additions: `run_prompt(…, images, tools)` (image files → base64 `images`
+  on the last user message; `⚙ tool: name(args)` printed from streamed
+  tool_calls) and REPL image-path turns + `/tools <file>` (⚠️ the image-path
+  check runs **before** the slash-command check — image paths start with `/`).
+- `launch.py` — `nvllm launch`: agent registry (`AGENTS`: claude/codex/qwen/
+  gemini/opencode/aider) as pure data (env + args templates with `<base>`/`<model>`/
+  `<alias>` placeholders) + shared exec path. Adding an agent = one `Agent(...)` entry.
+  `launch_config()` is the testable seam (no exec); `cmd_launch` does require_server
+  → model default (largest completion model / `--model` / `$NVLLM_LAUNCH_MODEL`) →
+  foreground `subprocess.call` with stdio inherited.
+  ⚠️ **Claude Code model-name gate (verified on the native 2026 build):**
+  `ANTHROPIC_MODEL` env / `--model` flag are validated against a known-claude
+  whitelist (rejected locally, **zero requests sent**); but the `model` key in a
+  `settings.json` (a "custom model option") accepts **any** name. So
+  `launch claude` writes `<state-dir>/claude-launch/settings.json`
+  (base URL + token + real model) and execs with `CLAUDE_CONFIG_DIR` — see
+  `claude_config_dir()`. Claude Code also always sends `tools`+`tool_choice:"auto"`
+  → the worker needs `NVLLM_WORKER_EXTRA_ARGS="--enable-auto-tool-choice
+  --tool-call-parser hermes"` or requests 400.
+- `anthropic.py` — Anthropic Messages API ↔ OpenAI translation (request body,
+  non-streaming message, `AnthropicStream` state machine for SSE). ⚠️ the
+  `AnthropicStream.finish` **attribute** (finish_reason) is distinct from the
+  `close()` **method** that emits the tail events — don't rename one onto the
+  other (instance attribute would shadow the method). Served at `POST /v1/messages`
+  so Claude Code (`nvllm launch claude`) works against local models.
+- `render.py` — pure rendering helpers (`human_bytes`, `human_time`, `render_table`);
+  no I/O, no deps — keep it that way.
 
 ## Conventions / gotchas
 
@@ -85,8 +156,13 @@ user-facing doc; this file is for working on the code.
 - **Worker log dir**: `NVLLM_LOG_DIR` (env-only, read by `Settings.from_env()`;
   default `~/.local/share/nvllm-serve/logs`). `install.sh` / the systemd unit set it
   to `<install_root>/logs` so an uninstall removes logs with the rest.
-- **Startup preflight**: `cli.main` exits early with actionable guidance when the
-  `vllm` binary cannot be resolved (`_preflight_vllm`, reuses `workers._vllm_bin()`;
-  tests build the app directly and never hit it).
+- **Startup preflight**: `run_server` (the `serve` path) exits early with
+  actionable guidance when the `vllm` binary cannot be resolved
+  (`_preflight_vllm`, reuses `workers._vllm_bin()`; tests build the app directly
+  and never hit it — and client commands must never trigger it either).
+- **CLI tests**: `tests/test_cli.py` runs the client commands against the real
+  app on a **real port** (uvicorn thread; the `live_server` fixture reuses the
+  conftest stub pattern) because the CLI talks real HTTP — TestClient can't be
+  used. REPL tests inject `in_fn`/`out_fn` to script the whole session (no sleeps).
 - **CI**: `.github/workflows/ci.yml` runs the suite on ubuntu / Python 3.12 — keep
   the test suite GPU-free and vLLM-free (stub worker + fake hub cache).

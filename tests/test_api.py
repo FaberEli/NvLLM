@@ -193,3 +193,175 @@ def test_api_ps_empty(client):
     r = client.get("/api/ps")
     assert r.status_code == 200
     assert r.json()["models"] == []
+
+
+# ---- unload (`nvllm stop`) --------------------------------------------------
+
+
+def test_api_unload_loaded_model(client):
+    # load a model first (ensure is stubbed; the chat call triggers it)
+    r = client.post("/api/chat", json={"model": "acme/TinyLM", "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    names = [m["name"] for m in client.get("/api/ps").json()["models"]]
+    assert "acme/TinyLM:main" in names
+
+    r = client.post("/api/unload", json={"model": "acme/TinyLM"})  # bare name must resolve
+    assert r.status_code == 200
+    assert r.json()["model"] == "acme/TinyLM:main"
+    assert client.get("/api/ps").json()["models"] == []
+
+
+def test_api_unload_not_loaded(client):
+    r = client.post("/api/unload", json={"model": "acme/Embedder"})
+    assert r.status_code == 404
+    assert "not loaded" in r.json()["error"]
+
+
+def test_api_unload_unknown_model(client):
+    r = client.post("/api/unload", json={"model": "nope/Nope"})
+    assert r.status_code == 404
+    assert "not found" in r.json()["error"]
+
+
+def test_api_unload_requires_model(client):
+    r = client.post("/api/unload", json={})
+    assert r.status_code == 400
+
+
+# ---- Anthropic /v1/messages -------------------------------------------------
+
+
+def test_v1_messages_non_stream(client, stub_captured):
+    r = client.post(
+        "/v1/messages",
+        json={
+            "model": "acme/TinyLM",
+            "max_tokens": 50,
+            "system": "be brief",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["type"] == "message"
+    assert body["content"] == [{"type": "text", "text": "Hello world"}]
+    assert body["stop_reason"] == "end_turn"
+    assert body["usage"]["input_tokens"] == 7
+    # the worker received a translated OpenAI body
+    oai = stub_captured[-1]
+    assert oai["messages"][0] == {"role": "system", "content": "be brief"}
+    assert oai["max_tokens"] == 50
+
+
+def test_v1_messages_stream(client):
+    with client.stream(
+        "POST",
+        "/v1/messages",
+        json={"model": "acme/TinyLM", "max_tokens": 50, "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+    ) as r:
+        assert r.status_code == 200
+        assert "text/event-stream" in r.headers["content-type"]
+        text = "".join(r.iter_text())
+    for event in ("message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"):
+        assert f"event: {event}" in text, event
+    assert "Hello" in text and " world" in text
+    assert "end_turn" in text
+
+
+def test_v1_messages_unknown_model_anthropic_error_shape(client):
+    r = client.post("/v1/messages", json={"model": "nope/Nope", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 404
+    body = r.json()
+    assert body["type"] == "error"
+    assert "not found" in body["error"]["message"]
+
+
+# ---- model aliases (Claude Code 客户端模型名校验的解法) ----------------------
+
+
+def test_v1_aliases_register_and_resolve(client, stub_captured):
+    # 注册：别名 → 目录中真实模型（解析成完整名 org/name:tag）
+    r = client.post("/v1/aliases", json={"name": "claude-sonnet-4-5", "model": "acme/TinyLM"})
+    assert r.status_code == 200
+    assert r.json() == {"name": "claude-sonnet-4-5", "model": "acme/TinyLM:main"}
+
+    # 目标模型不存在 → 404；缺字段 → 400
+    assert client.post("/v1/aliases", json={"name": "x", "model": "nope/Nope"}).status_code == 404
+    assert client.post("/v1/aliases", json={"name": "x"}).status_code == 400
+
+    # 别名可查询
+    r = client.get("/v1/aliases")
+    assert r.status_code == 200
+    assert r.json()["aliases"] == {"claude-sonnet-4-5": "acme/TinyLM:main"}
+
+    # 闭环：/v1/messages 用别名 → 解析到真实模型，worker 收到真实模型名
+    r = client.post(
+        "/v1/messages",
+        json={"model": "claude-sonnet-4-5", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["model"] == "acme/TinyLM:main"
+    assert body["content"] == [{"type": "text", "text": "Hello world"}]
+    assert stub_captured[-1]["model"] == "acme/TinyLM:main"
+
+
+# ---- vision + tools (server-side translation, already supported) --------------
+
+_B64 = "aW1hZ2U="  # any base64 payload; the stub doesn't decode it
+
+
+def test_api_chat_images_become_image_url_parts(client, stub_captured):
+    r = client.post(
+        "/api/chat",
+        json={
+            "model": "acme/TinyLM",
+            "messages": [
+                {"role": "user", "content": "what is this?", "images": [f"data:image/png;base64,{_B64}"]},
+            ],
+            "stream": False,
+        },
+    )
+    assert r.status_code == 200
+    content = stub_captured[-1]["messages"][0]["content"]
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "what is this?"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_api_chat_raw_base64_images_default_png_mime(client, stub_captured):
+    client.post(
+        "/api/chat",
+        json={
+            "model": "acme/TinyLM",
+            "messages": [{"role": "user", "content": "hi", "images": [_B64]}],
+            "stream": False,
+        },
+    )
+    content = stub_captured[-1]["messages"][0]["content"]
+    assert content[1]["image_url"]["url"] == f"data:image/png;base64,{_B64}"
+
+
+def test_api_chat_tools_passthrough(client, stub_captured):
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the weather",
+                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+            },
+        }
+    ]
+    r = client.post(
+        "/api/chat",
+        json={
+            "model": "acme/TinyLM",
+            "messages": [{"role": "user", "content": "weather in Paris?"}],
+            "tools": tools,
+            "stream": False,
+        },
+    )
+    assert r.status_code == 200
+    assert stub_captured[-1]["tools"] == tools

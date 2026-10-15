@@ -163,10 +163,11 @@ def fake_hub(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-def settings(fake_hub: Path):
+def settings(fake_hub: Path, tmp_path: Path):
     from nvllm_service.config import Settings
 
-    return Settings(hf_hub_root=fake_hub)
+    # state_root (the field) in tmp so `nvllm create` tests never touch the real home
+    return Settings(hf_hub_root=fake_hub, state_root=tmp_path / "state")
 
 
 @pytest.fixture()
@@ -190,3 +191,47 @@ def client(settings, stub_server, monkeypatch):
     monkeypatch.setattr(manager, "ensure", fake_ensure)
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture()
+def live_server(settings, stub_server, monkeypatch):
+    """The real app on a free port (CLI tests need real HTTP); loads hit the stub vLLM."""
+    import uvicorn
+
+    from nvllm_service.main import create_app
+    from nvllm_service.workers import STATE_READY, Worker
+
+    port = _free_port()
+    app = create_app(settings)
+    manager = app.state.manager
+
+    async def fake_ensure(info, keep_alive=None, is_judge=False):
+        w = manager.workers.get(info.name)
+        if w is None or w.state != STATE_READY:
+            w = Worker(info=info, port=stub_server, state=STATE_READY, pid=9999)
+            manager.workers[info.name] = w
+        return w
+
+    monkeypatch.setattr(manager, "ensure", fake_ensure)
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    t = threading.Thread(target=server.run, daemon=True)
+    t.start()
+    url = f"http://127.0.0.1:{port}"
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        try:
+            if httpx.get(f"{url}/healthz", timeout=1.0).status_code == 200:
+                yield url
+                return
+        except httpx.HTTPError:
+            pass
+        time.sleep(0.1)
+    pytest.fail("app server did not start in time")
+
+
+@pytest.fixture()
+def nvllm_env(live_server, monkeypatch):
+    """Point the CLI at the live server via NVLLM_SERVER (like a user would)."""
+    monkeypatch.setenv("NVLLM_SERVER", live_server)
+    return live_server

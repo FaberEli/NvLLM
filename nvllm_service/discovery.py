@@ -61,14 +61,19 @@ def _refs_of(model_dir: Path) -> dict[str, str]:
 
 
 def _weight_size(snapshot: Path) -> int:
+    """Total weight bytes. HF snapshots are symlinks into blobs/, so symlinks
+    must be followed (`stat`), not measured as links (`lstat` — that would
+    report the ~50-byte link path instead of the multi-GB blob)."""
     total = 0
     for ext in ("*.safetensors", "*.bin", "*.gguf", "*.pt", "*.pth"):
         for p in snapshot.glob(ext):
-            if p.is_symlink() or p.is_file():
-                try:
+            try:
+                if p.is_symlink():
+                    total += p.stat().st_size  # follow the symlink to the blob
+                elif p.is_file():
                     total += p.lstat().st_size
-                except OSError:
-                    pass
+            except OSError:
+                pass
     return total
 
 

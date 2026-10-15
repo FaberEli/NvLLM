@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# nvllm-serve — one-click installer
+# nvllm — one-click installer
 #
-# Installs nvllm-serve + the vLLM engine (pinned to the validated baseline)
+# Installs the nvllm CLI + the vLLM engine (pinned to the validated baseline)
 # into a self-contained root directory (default: ~/.nvllm), and links
-# `nvllm-serve` into ~/.local/bin. Uninstall cleanly with scripts/uninstall.sh.
+# `nvllm` into ~/.local/bin. Uninstall cleanly with scripts/uninstall.sh.
 #
 # Usage:
 #   scripts/install.sh [options]
@@ -39,9 +39,9 @@ ASSUME_YES=0
 # ------------------------------------------------------------------ usage ---
 usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; }
 
-log()  { printf '\033[1;34m[nvllm-serve]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[nvllm-serve] warning:\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31m[nvllm-serve] error:\033[0m %s\n' "$*" >&2; exit 1; }
+log()  { printf '\033[1;34m[nvllm]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[nvllm] warning:\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m[nvllm] error:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # run [CMD...] — prints the command; skips execution under --dry-run
 run() {
@@ -69,34 +69,57 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# ------------------------------------------- prebuilt release detection ----
+# Self-contained release (scripts/build-release.sh output): install.sh sits
+# NEXT TO a prebuilt venv/ that already contains vLLM + nvllm. In that case the
+# install is just "move it into place" — interpreter selection and pip are
+# skipped entirely (that is the whole point of the tarball).
+PREBUILT=0
+if [ -x "$REPO_ROOT/venv/bin/python" ]; then
+  PREBUILT=1
+  # 防呆：落位是 rm -rf + cp -a，安装根与发行目录互为包含时会自我吞噬
+  case "$ROOT/" in
+    "$REPO_ROOT"/*) die "install root ($ROOT) is inside the release dir ($REPO_ROOT) — set NVLLM_HOME elsewhere" ;;
+  esac
+  case "$REPO_ROOT/" in
+    "$ROOT"/*) die "release dir ($REPO_ROOT) is inside the install root ($ROOT) — set NVLLM_HOME elsewhere" ;;
+  esac
+fi
+
 # ----------------------------------------------------------------- precheck ---
 [ "$(uname -s)" = "Linux" ] || die "this installer targets Linux (validated on DGX Spark GB10)"
 if [ "$(uname -m)" != "aarch64" ]; then
   warn "not aarch64 — the validated baseline is DGX Spark (GB10); continuing anyway"
 fi
 
-# Pick an interpreter. vLLM 0.31 ships wheels for Python 3.10-3.13; a system
-# `python3` on 3.14+ would fail to install the engine, so prefer 3.11-3.13.
-if [ -n "$PYTHON_OVERRIDE" ]; then
-  PYTHON="$PYTHON_OVERRIDE"
+if [ "$PREBUILT" -eq 1 ]; then
+  PYTHON="$REPO_ROOT/venv/bin/python"
+  PYVER="$("$PYTHON" -c 'import platform; print(platform.python_version())')"
+  log "prebuilt release — bundled venv (python $PYVER); pip steps will be skipped"
 else
-  PYTHON=""
-  for cand in python3.13 python3.12 python3.11; do
-    if command -v "$cand" >/dev/null 2>&1; then
-      PYTHON="$cand"
-      break
+  # Pick an interpreter. vLLM 0.31 ships wheels for Python 3.10-3.13; a system
+  # `python3` on 3.14+ would fail to install the engine, so prefer 3.11-3.13.
+  if [ -n "$PYTHON_OVERRIDE" ]; then
+    PYTHON="$PYTHON_OVERRIDE"
+  else
+    PYTHON=""
+    for cand in python3.13 python3.12 python3.11; do
+      if command -v "$cand" >/dev/null 2>&1; then
+        PYTHON="$cand"
+        break
+      fi
+    done
+    if [ -z "$PYTHON" ]; then
+      PYTHON="python3"
     fi
-  done
-  if [ -z "$PYTHON" ]; then
-    PYTHON="python3"
   fi
-fi
 
-command -v "$PYTHON" >/dev/null 2>&1 || die "python interpreter not found: $PYTHON"
-"$PYTHON" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] <= (3, 13) else 1)' \
-  || warn "interpreter $PYTHON is not in the validated range 3.11-3.13; vLLM wheels may be unavailable"
-PYVER="$("$PYTHON" -c 'import platform; print(platform.python_version())')"
-log "interpreter: $PYTHON ($PYVER)"
+  command -v "$PYTHON" >/dev/null 2>&1 || die "python interpreter not found: $PYTHON"
+  "$PYTHON" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] <= (3, 13) else 1)' \
+    || warn "interpreter $PYTHON is not in the validated range 3.11-3.13; vLLM wheels may be unavailable"
+  PYVER="$("$PYTHON" -c 'import platform; print(platform.python_version())')"
+  log "interpreter: $PYTHON ($PYVER)"
+fi
 
 if ! command -v nvidia-smi >/dev/null 2>&1; then
   warn "nvidia-smi not found — no CUDA GPU visible; vLLM will install but cannot serve"
@@ -108,7 +131,17 @@ fi
 
 # -------------------------------------------------------------------- venv ---
 log "install root: $ROOT"
-if [ -x "$ROOT/venv/bin/python" ]; then
+if [ "$PREBUILT" -eq 1 ]; then
+  # 预构建 venv 直接落位（同文件系统时这是一次纯拷贝；升级时先清旧的）
+  run mkdir -p "$ROOT"
+  if [ -e "$ROOT/venv" ]; then
+    log "existing venv found — replacing with the bundled one (upgrade)"
+    run rm -rf "$ROOT/venv"
+  fi
+  run cp -a "$REPO_ROOT/venv" "$ROOT/venv"
+  [ -f "$REPO_ROOT/LICENSE" ]  && run cp -f "$REPO_ROOT/LICENSE"  "$ROOT/LICENSE"
+  [ -f "$REPO_ROOT/README.md" ] && run cp -f "$REPO_ROOT/README.md" "$ROOT/README.md"
+elif [ -x "$ROOT/venv/bin/python" ]; then
   log "existing venv found — upgrading in place"
 else
   # Prefer stdlib venv (ships pip). Fall back to `uv venv` on distros that lack
@@ -135,43 +168,59 @@ pip_install() {
 }
 
 # ------------------------------------------------------------- install pkgs ---
-log "installing vLLM engine: vllm==$VLLM_VERSION (validated baseline; pulls matching torch)"
-pip_install "vllm==$VLLM_VERSION"
+if [ "$PREBUILT" -eq 0 ]; then
+  log "installing vLLM engine: vllm==$VLLM_VERSION (validated baseline; pulls matching torch)"
+  pip_install "vllm==$VLLM_VERSION"
 
-log "installing nvllm-serve from: $REPO_ROOT"
-pip_install "$REPO_ROOT"
+  log "installing nvllm from: $REPO_ROOT"
+  pip_install "$REPO_ROOT"
+fi
 
 # -------------------------------------------------------------------- smoke ---
-run "$ROOT/venv/bin/nvllm-serve" --version
+run "$ROOT/venv/bin/nvllm" --version
 if [ "$DRY_RUN" -ne 1 ]; then
   [ -e "$ROOT/venv/bin/vllm" ] || die "vllm binary missing after install (vllm install failed?)"
 fi
 
 # ------------------------------------------------------------------- symlink ---
 LINK_DIR="$HOME/.local/bin"
-LINK="$LINK_DIR/nvllm-serve"
 run mkdir -p "$LINK_DIR"
-run ln -sf "$ROOT/venv/bin/nvllm-serve" "$LINK"
+run ln -sf "$ROOT/venv/bin/nvllm" "$LINK_DIR/nvllm"
+# retire the legacy nvllm-serve symlink if it belongs to this install
+LEGACY_LINK="$LINK_DIR/nvllm-serve"
+if [ -L "$LEGACY_LINK" ]; then
+  target="$(readlink "$LEGACY_LINK" 2>/dev/null || true)"
+  case "$target" in
+    "$ROOT"/*|"$ROOT") run rm -f "$LEGACY_LINK" ;;
+  esac
+fi
 case ":$PATH:" in
   *":$LINK_DIR:"*) : ;;
   *) warn "$LINK_DIR is not on your PATH — add it: export PATH=\"$LINK_DIR:\$PATH\"" ;;
 esac
 
 # ------------------------------------------------------------------ systemd ---
-UNIT_FILE="$HOME/.config/systemd/user/nvllm-serve.service"
+# retire the legacy nvllm-serve unit if present (it would double-start)
+LEGACY_UNIT="$HOME/.config/systemd/user/nvllm-serve.service"
+if [ -f "$LEGACY_UNIT" ]; then
+  systemctl --user disable --now nvllm-serve 2>/dev/null || true
+  rm -f "$LEGACY_UNIT"
+fi
+UNIT_FILE="$HOME/.config/systemd/user/nvllm.service"
 if [ "$WITH_SERVICE" -eq 1 ]; then
   log "writing systemd user unit: $UNIT_FILE"
   if [ "$DRY_RUN" -ne 1 ]; then
     mkdir -p "$HOME/.config/systemd/user"
     cat > "$UNIT_FILE" <<EOF
 [Unit]
-Description=nvllm-serve — resident LLM inference service (vLLM backend)
+Description=nvllm — resident LLM inference service (vLLM backend)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$ROOT/venv/bin/nvllm-serve --port $PORT
+ExecStart=$ROOT/venv/bin/nvllm serve --port $PORT
 Environment=NVLLM_LOG_DIR=$ROOT/logs
+Environment=NVLLM_STATE_DIR=$ROOT/state
 Environment=NVLLM_WORKER_MAX_JOBS=2
 WorkingDirectory=$ROOT
 Restart=on-failure
@@ -181,7 +230,7 @@ RestartSec=5
 WantedBy=default.target
 EOF
     systemctl --user daemon-reload
-    systemctl --user enable --now nvllm-serve
+    systemctl --user enable --now nvllm
     log "systemd user service enabled and started"
     echo "    Tip: run 'loginctl enable-linger $USER' so it starts at boot without a login session."
   fi
@@ -195,6 +244,7 @@ fi
 if [ "$DRY_RUN" -ne 1 ]; then
   PYTHON="$PYTHON" ROOT="$ROOT" REPO_ROOT="$REPO_ROOT" VLLM_VERSION="$VLLM_VERSION" \
   PORT="$PORT" WITH_SERVICE="$WITH_SERVICE" GIT_URL="$GIT_URL" PYVER="$PYVER" \
+  PREBUILT="$PREBUILT" \
   "$PYTHON" - <<'PY'
 import json, os, datetime
 meta = {
@@ -205,6 +255,7 @@ meta = {
     "python": os.environ["PYVER"],
     "port": int(os.environ["PORT"]),
     "service": os.environ["WITH_SERVICE"] == "1",
+    "prebuilt": os.environ.get("PREBUILT") == "1",
     "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
 }
 with open(os.path.join(os.environ["ROOT"], "install.json"), "w", encoding="utf-8") as f:
@@ -218,7 +269,7 @@ fi
 cat <<EOF
 
 ============================================================
-  nvllm-serve installed  (root: $ROOT)
+  nvllm installed  (root: $ROOT)
   vLLM engine: $VLLM_VERSION   |   service port: $PORT
 ============================================================
 
@@ -226,8 +277,8 @@ Next steps
   1. Get an NVFP4 model into your HF cache, e.g.:
        pip install -U "huggingface_hub[cli]"   (or: pip install huggingface_hub)
        hf download nvidia/Llama-3.1-8B-Instruct-NVFP4
-  2. Start the service (or: systemctl --user status nvllm-serve):
-       nvllm-serve
+  2. Start the service (or: systemctl --user status nvllm):
+       nvllm serve
   3. Verify:
        curl -s localhost:$PORT/api/tags | jq
        curl -s localhost:$PORT/v1/chat/completions -d '{

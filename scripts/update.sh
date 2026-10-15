@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# nvllm-serve — one-click updater
+# nvllm — one-click updater
 #
-# Reinstalls nvllm-serve from the recorded source (local dir, falling back to
+# Reinstalls nvllm from the recorded source (local dir, falling back to
 # the recorded git URL if the dir is gone), refreshes the ~/.local/bin symlink,
 # and restarts the systemd user service if it is active.
 #
@@ -28,9 +28,9 @@ DRY_RUN=0
 
 usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
 
-log()  { printf '\033[1;34m[nvllm-serve]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[nvllm-serve] warning:\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31m[nvllm-serve] error:\033[0m %s\n' "$*" >&2; exit 1; }
+log()  { printf '\033[1;34m[nvllm]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[nvllm] warning:\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m[nvllm] error:\033[0m %s\n' "$*" >&2; exit 1; }
 
 run() {
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -57,7 +57,7 @@ done
 META="$("$ROOT/venv/bin/python" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["vllm"])' "$ROOT/install.json")"
 log "current install (from $ROOT/install.json): vllm==$META"
 
-# ----------------------------------------------------------------- nvllm-serve ---
+# --------------------------------------------------------------------- nvllm ---
 read -r SOURCE_DIR GIT_URL < <("$ROOT/venv/bin/python" -c '
 import json, sys
 m = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -65,7 +65,7 @@ print(m.get("source_dir") or "", m.get("git_url") or "")
 ' "$ROOT/install.json")
 
 if [ -n "$SOURCE_DIR" ] && [ -f "$SOURCE_DIR/pyproject.toml" ]; then
-  log "updating nvllm-serve from local source: $SOURCE_DIR"
+  log "updating nvllm from local source: $SOURCE_DIR"
   pip_target="$SOURCE_DIR"
 elif [ -n "$GIT_URL" ]; then
   warn "source dir $SOURCE_DIR is gone — installing from git: $GIT_URL"
@@ -100,12 +100,25 @@ fi
 # --------------------------------------------------------------------- symlink ---
 LINK_DIR="$HOME/.local/bin"
 run mkdir -p "$LINK_DIR"
-run ln -sf "$ROOT/venv/bin/nvllm-serve" "$LINK_DIR/nvllm-serve"
+run ln -sf "$ROOT/venv/bin/nvllm" "$LINK_DIR/nvllm"
+# retire a legacy nvllm-serve symlink from pre-0.3.0 installs, if it points here
+LEGACY_LINK="$LINK_DIR/nvllm-serve"
+if [ -L "$LEGACY_LINK" ]; then
+  target="$(readlink "$LEGACY_LINK" 2>/dev/null || true)"
+  case "$target" in
+    "$ROOT"/*|"$ROOT") run rm -f "$LEGACY_LINK" ;;
+  esac
+fi
 
 # ---------------------------------------------------------------------- service ---
-if [ "$DRY_RUN" -ne 1 ] && systemctl --user is-active nvllm-serve >/dev/null 2>&1; then
-  log "restarting systemd user service nvllm-serve"
-  systemctl --user restart nvllm-serve
+if [ "$DRY_RUN" -ne 1 ]; then
+  if systemctl --user is-active nvllm >/dev/null 2>&1; then
+    log "restarting systemd user service nvllm"
+    systemctl --user restart nvllm
+  elif systemctl --user is-active nvllm-serve >/dev/null 2>&1; then
+    log "restarting legacy systemd user service nvllm-serve"
+    systemctl --user restart nvllm-serve
+  fi
 fi
 
 # ------------------------------------------------------------- record new vllm ---
@@ -124,4 +137,4 @@ PY
   log "updated install.json (vllm==$NEW_VLLM)"
 fi
 
-log "done. Verify with:  nvllm-serve --version"
+log "done. Verify with:  nvllm --version"

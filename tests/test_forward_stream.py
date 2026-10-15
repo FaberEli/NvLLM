@@ -72,6 +72,38 @@ def test_openai_passthrough_holds_inflight(stub_server):
     assert b"chat.completion.chunk" in body
 
 
+def test_rewrite_sse_line():
+    assert (
+        forward._rewrite_sse_line('data: {"model": "base", "choices": []}', "virt")
+        == 'data: {"model": "virt", "choices": []}'
+    )
+    assert forward._rewrite_sse_line("data: [DONE]", "virt") == "data: [DONE]"
+    assert forward._rewrite_sse_line("", "virt") == ""
+    assert forward._rewrite_sse_line("event: x", "virt") == "event: x"
+    # 非 JSON 的 data 载荷原样保留，不破坏
+    assert forward._rewrite_sse_line("data: not-json", "virt") == "data: not-json"
+
+
+def test_openai_passthrough_as_model_rewrites_model_field(stub_server):
+    """虚拟模型回显：as_model 时 SSE 每个事件的 model 字段改成请求名。"""
+    w, name = _worker(stub_server)
+    assert w.inflight == 0
+
+    async def scenario() -> bytes:
+        resp = await forward.openai_passthrough(
+            w, "/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            as_model="assistant",
+        )
+        assert w.inflight == 1
+        body = b"".join([c async for c in resp.body_iterator])
+        assert w.inflight == 0
+        return body
+
+    body = asyncio.run(scenario()).decode("utf-8")
+    assert '"model": "assistant"' in body or '"model":"assistant"' in body
+    assert f'"model": "{name}"' not in body
+
+
 def test_streaming_inflight_released_on_client_abort(stub_server):
     """If the client stops reading, the reference is still released (no leak)."""
     w, name = _worker(stub_server)

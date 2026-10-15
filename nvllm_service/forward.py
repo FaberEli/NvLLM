@@ -148,8 +148,12 @@ def openai_completions_body(model_name: str, body: dict) -> dict[str, Any]:
 async def _worker_error(resp: httpx.Response) -> HTTPException:
     detail = ""
     try:
-        body = await resp.json()
-    except (json.JSONDecodeError, ValueError):
+        # streaming responses must be materialized before .json() (ResponseNotRead);
+        # note httpx's Response.json() is synchronous (only aread() is a coroutine)
+        if not resp.is_stream_consumed and not resp.is_closed:
+            await resp.aread()
+        body = resp.json()
+    except (json.JSONDecodeError, ValueError, httpx.HTTPError):
         body = None
     if isinstance(body, dict):
         err = body.get("error")
@@ -187,13 +191,37 @@ async def forward_json(worker: Worker, path: str, body: dict) -> Any:
         raise _http(502, "worker returned a non-JSON response")
 
 
-async def openai_passthrough(worker: Worker, path: str, body: dict) -> StreamingResponse:
+def _rewrite_sse_line(line: str, as_model: str) -> str:
+    """Rewrite one SSE line's `model` field (virtual-model name echo).
+
+    Non-data lines (and `data: [DONE]`) pass through untouched; a data payload
+    that does not parse as a JSON object is left as-is rather than mangled.
+    """
+    line = line.strip()
+    if line.startswith("data:"):
+        payload = line[len("data:") :].strip()
+        if payload and payload != "[DONE]":
+            try:
+                evt = json.loads(payload)
+            except json.JSONDecodeError:
+                return line
+            if isinstance(evt, dict):
+                evt["model"] = as_model
+                return f"data: {json.dumps(evt, ensure_ascii=False)}"
+    return line
+
+
+async def openai_passthrough(worker: Worker, path: str, body: dict, as_model: str | None = None) -> StreamingResponse:
     """Forward an OpenAI request, streaming the worker's bytes back verbatim.
 
     Holds the worker's in-flight reference for the whole stream (released in the
     generator's ``finally``). The response body is delivered *after* the endpoint
     returns — outside the endpoint's own ``track()`` window — so without this a
     ``keep-alive=0`` worker could be reaped by the monitor mid-stream.
+
+    ``as_model`` (optional): echo this name in each SSE event's ``model`` field
+    instead of the worker's — used so a created (virtual) model answers under
+    the name the client requested.
     """
     payload = dict(body)
     payload["model"] = worker.name
@@ -213,8 +241,20 @@ async def openai_passthrough(worker: Worker, path: str, body: dict) -> Streaming
 
     async def gen() -> AsyncIterator[bytes]:
         try:
-            async for chunk in resp.aiter_bytes():
-                yield chunk
+            if as_model is None:
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
+            else:
+                # line-buffer the byte stream so a `model` value split across
+                # chunks is still rewritten correctly
+                buf = ""
+                async for chunk in resp.aiter_bytes():
+                    buf += chunk.decode("utf-8", errors="replace")
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        yield (_rewrite_sse_line(line, as_model) + "\n").encode("utf-8")
+                if buf.strip():
+                    yield _rewrite_sse_line(buf, as_model).encode("utf-8")
         finally:
             await resp.aclose()
             await client.aclose()

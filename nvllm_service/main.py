@@ -14,9 +14,10 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
-from . import __version__, forward
+from . import __version__, anthropic, forward
 from .catalog import Capability, ModelInfo
 from .config import Settings
+from .created import CreatedModel, CreatedStore
 from .discovery import by_name, discover
 from .router import ROUTE_ALIAS, Router
 from .workers import Worker, WorkerManager
@@ -42,6 +43,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.catalog = catalog
     app.state.manager = manager
+    # Anthropic-model-name aliases -> real catalog model. Lets agents that
+    # client-side-gate model names (Claude Code) point at local models: the
+    # agent sends a recognized "claude-*" name, the server maps it.
+    app.state.model_aliases: dict[str, str] = {}
+    # `nvllm create` virtual models (name -> base + system + options), persisted
+    # in the state dir so they survive restarts.
+    app.state.created = CreatedStore(settings.state_dir() / "created.json")
 
     # M3: Router — only active when a judge model is configured
     router: Router | None = None
@@ -114,8 +122,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return ""
 
     async def _resolve_model(body: dict) -> ModelInfo:
-        """Resolve the request's model; the 'auto' alias triggers the Router (if enabled)."""
+        """Resolve the request's model.
+
+        Registered aliases (POST /v1/aliases, e.g. Claude Code's gated
+        'claude-*' name) are mapped back to the real catalog model first;
+        the 'auto' alias then triggers the Router (if enabled).
+        """
         name = str(body.get("model") or body.get("name") or "")
+        target = app.state.model_aliases.get(name)
+        if target:
+            body["model"] = target
+            name = target
         if name == ROUTE_ALIAS:
             if router is None:
                 raise HTTPException(
@@ -127,6 +144,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.info("routed 'auto' -> %s", chosen.name)
             return chosen
         return find_model(name)
+
+    def _created(name: str) -> CreatedModel | None:
+        """The virtual-model wrapper for `name`, if one was created (`nvllm create`)."""
+        return app.state.created.get(name)
+
+    async def _resolve_with_spec(body: dict) -> tuple[ModelInfo, str, CreatedModel | None]:
+        """Resolve the request's model; a created (virtual) name resolves to its
+        base model (shared worker) while its wrapper spec is returned for
+        request-level injection. Returns (base_info, requested_name, spec)."""
+        requested = str(body.get("model") or body.get("name") or "")
+        cm = _created(requested)
+        if cm is not None:
+            body["model"] = cm.base  # catalog resolution happens against the base
+        info = await _resolve_model(body)
+        return info, requested, cm
+
+    def _inject_ollama_spec(body: dict, cm: CreatedModel | None) -> None:
+        """Ollama bodies: system prompt as a message, options merged (request wins)."""
+        if cm is None:
+            return
+        if cm.system:
+            msgs = body.get("messages")
+            if isinstance(msgs, list):
+                for m in msgs:
+                    if isinstance(m, dict) and m.get("role") == "system":
+                        c = m.get("content")
+                        m["content"] = f"{c}\n\n{cm.system}" if isinstance(c, str) and c else cm.system
+                        break
+                else:
+                    msgs.insert(0, {"role": "system", "content": cm.system})
+        if cm.options:
+            body["options"] = {**cm.options, **(body.get("options") or {})}
+
+    def _inject_openai_spec(body: dict, cm: CreatedModel | None) -> None:
+        """OpenAI-style bodies: system message + top-level params (num_predict->max_tokens)."""
+        if cm is None:
+            return
+        if cm.system:
+            msgs = body.get("messages")
+            if isinstance(msgs, list):
+                for m in msgs:
+                    if isinstance(m, dict) and m.get("role") == "system":
+                        c = m.get("content")
+                        m["content"] = f"{c}\n\n{cm.system}" if isinstance(c, str) and c else cm.system
+                        break
+                else:
+                    msgs.insert(0, {"role": "system", "content": cm.system})
+        for k in ("temperature", "top_p"):
+            if k in cm.options and k not in body:
+                body[k] = cm.options[k]
+        if "num_predict" in cm.options and "max_tokens" not in body:
+            body["max_tokens"] = int(cm.options["num_predict"])
 
     # ---- misc ---------------------------------------------------------
     @app.get("/", include_in_schema=False)
@@ -142,9 +211,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def api_version() -> dict[str, str]:
         return {"version": settings.version}
 
+    def _created_entries_ollama() -> list[dict[str, Any]]:
+        out = []
+        for cm in app.state.created.list():
+            base = next((m for m in catalog if m.name == cm.base), None)
+            out.append(
+                {
+                    "name": cm.name,
+                    "model": cm.name,
+                    "modified_at": cm.created_at,
+                    "size": base.size if base else 0,
+                    "digest": "",
+                    "details": {"parent_model": cm.base, "format": "virtual"},
+                    "capabilities": sorted(c.value for c in (base.capabilities if base else ())),
+                }
+            )
+        return out
+
     @app.get("/api/tags")
     async def api_tags() -> dict[str, Any]:
-        return {"models": [m.to_ollama_list() for m in catalog]}
+        return {"models": [m.to_ollama_list() for m in catalog] + _created_entries_ollama()}
 
     @app.get("/api/ps")
     async def api_ps() -> dict[str, Any]:
@@ -156,7 +242,77 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         name = body.get("model") or body.get("name")
         if not name:
             raise HTTPException(status_code=400, detail='"model" is required')
-        return find_model(str(name)).to_show()
+        name = str(name)
+        cm = _created(name)
+        if cm is not None:
+            base = find_model(cm.base)
+            out: dict[str, Any] = base.to_show()
+            out["details"]["parent_model"] = cm.base
+            if cm.system:
+                out["system"] = cm.system
+            if cm.options:
+                out["options"] = cm.options
+            return out
+        return find_model(name).to_show()
+
+    @app.post("/api/unload")
+    async def api_unload(request: Request) -> dict[str, Any]:
+        """Unload a loaded model (the `nvllm stop` counterpart of Ollama's stop)."""
+        body = await _json_body(request)
+        name = str(body.get("model") or body.get("name") or "")
+        if not name:
+            raise HTTPException(status_code=400, detail='"model" is required')
+        info = by_name(catalog, name)
+        if info is None:
+            raise HTTPException(status_code=404, detail=f"model '{name}' not found")
+        if not await manager.unload(info.name):
+            raise HTTPException(status_code=404, detail=f"model '{info.name}' is not loaded")
+        return {"model": info.name}
+
+    @app.post("/api/create")
+    async def api_create(request: Request) -> dict[str, Any]:
+        """Create a virtual model: `nvllm create NAME --from BASE [--system ...]`.
+
+        Pure metadata over a catalog model (name + system prompt + sampling
+        options) — no weights involved; serving it uses the base's worker.
+        """
+        body = await _json_body(request)
+        name = str(body.get("name") or "").strip()
+        base = str(body.get("model") or "").strip()
+        system = str(body.get("system") or "")
+        options = body.get("options")
+        options = dict(options) if isinstance(options, dict) else {}
+        if not name:
+            raise HTTPException(status_code=400, detail='"name" is required')
+        if not base:
+            raise HTTPException(status_code=400, detail='"model" (the base model) is required')
+        info = by_name(catalog, base)
+        if info is None:
+            raise HTTPException(status_code=404, detail=f"base model '{base}' not found")
+        if not info.supported:
+            raise HTTPException(status_code=400, detail=f"base model '{info.name}' is not servable: {info.note}")
+        if by_name(catalog, name) is not None:
+            raise HTTPException(status_code=400, detail=f"name '{name}' collides with a catalog model")
+        cm = CreatedModel(name=name, base=info.name, system=system, options=options)
+        try:
+            app.state.created.create(cm)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        log.info("created model: %s (base=%s, system=%dB, options=%s)", name, info.name, len(system), options)
+        return cm.to_api()
+
+    @app.post("/api/rm")
+    async def api_rm(request: Request) -> dict[str, Any]:
+        """Delete a *created* (virtual) model. Real catalog models are never
+        deleted by the server (NvLLM trait: they are files in the HF cache)."""
+        body = await _json_body(request)
+        name = str(body.get("name") or body.get("model") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail='"name" is required')
+        if not app.state.created.delete(name):
+            raise HTTPException(status_code=404, detail=f"'{name}' is not a created model")
+        log.info("deleted created model: %s", name)
+        return {"name": name}
 
     @app.get("/api/router")
     async def api_router() -> dict[str, Any]:
@@ -172,16 +328,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/chat")
     async def api_chat(request: Request):
         body = await _json_body(request)
-        info = await _resolve_model(body)
+        info, requested, spec = await _resolve_with_spec(body)
         require(info, Capability.COMPLETION)
+        _inject_ollama_spec(body, spec)
+        shown = requested if spec else info.name  # virtual name back to the client
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         async with manager.track(worker):
             oai = forward.openai_chat_body(info.name, body)
             t0 = time.time()
             if not oai.get("stream"):
                 resp = await forward.forward_json(worker, "/v1/chat/completions", oai)
-                return forward.ollama_chat_response(info.name, resp, t0)
-            return await forward.ollama_chat_stream(worker, info.name, oai, t0)
+                return forward.ollama_chat_response(shown, resp, t0)
+            return await forward.ollama_chat_stream(worker, shown, oai, t0)
 
     @app.post("/api/generate")
     async def api_generate(request: Request):
@@ -233,14 +391,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/v1/models")
     async def v1_models() -> dict[str, Any]:
         data = [m.to_openai_model() for m in catalog if m.supported]
+        data += [
+            {"id": cm.name, "object": "model", "created": 0, "owned_by": "nvllm"}
+            for cm in app.state.created.list()
+        ]
         return {"object": "list", "data": data}
 
     @app.post("/v1/chat/completions")
     async def v1_chat_completions(request: Request) -> Any:
         body = await _json_body(request)
-        info = await _resolve_model(body)
+        info, requested, spec = await _resolve_with_spec(body)
+        _inject_openai_spec(body, spec)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         async with manager.track(worker):
+            if spec is not None:
+                # 虚拟模型：响应的 `model` 字段回显请求名（与 /api/chat、/v1/messages 一致）
+                if not body.get("stream"):
+                    resp = await forward.forward_json(worker, "/v1/chat/completions", body)
+                    if isinstance(resp, dict):
+                        resp["model"] = requested
+                    return resp
+                return await forward.openai_passthrough(worker, "/v1/chat/completions", body, as_model=requested)
             return await forward.openai_passthrough(worker, "/v1/chat/completions", body)
 
     @app.post("/v1/completions")
@@ -258,5 +429,88 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         async with manager.track(worker):
             return await forward.openai_passthrough(worker, "/v1/embeddings", body)
+
+    # ---- Anthropic-compatible (for `nvllm launch claude` & other Anthropic clients) ----
+    def _anthropic_error(e: HTTPException) -> JSONResponse:
+        code, payload = anthropic.error_response(e.status_code, str(e.detail))
+        return JSONResponse(status_code=code, content=payload)
+
+    async def _anthropic_stream(worker: Worker, model: str, oai: dict) -> StreamingResponse:
+        """OpenAI SSE in -> Anthropic SSE out; holds the worker's in-flight ref
+        for the stream's lifetime (same pattern as forward.openai_passthrough)."""
+        resp, client = await forward._openai_stream(worker, "/v1/chat/completions", oai)
+        acc = anthropic.AnthropicStream(model)
+        worker.inflight += 1
+
+        async def gen():
+            try:
+                for ev in acc.start():
+                    yield ev
+                async for evt in forward._iter_sse_events(resp):
+                    for ev in acc.apply(evt):
+                        yield ev
+                for ev in acc.close():
+                    yield ev
+            finally:
+                await resp.aclose()
+                await client.aclose()
+                worker.inflight = max(0, worker.inflight - 1)
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.post("/v1/aliases")
+    async def v1_aliases(request: Request) -> dict[str, Any]:
+        """Register an alias name -> real model, e.g.
+        {"name": "claude-sonnet-4-5", "model": "nvidia/Qwen3-8B-NVFP4"}."""
+        body = await _json_body(request)
+        alias = str(body.get("name") or "").strip()
+        name = str(body.get("model") or "").strip()
+        if not alias or not name:
+            raise HTTPException(status_code=400, detail='"name" and "model" are required')
+        info = by_name(catalog, name)
+        if info is None:
+            raise HTTPException(status_code=404, detail=f"model '{name}' not found")
+        if not info.supported:
+            raise HTTPException(status_code=400, detail=f"model '{info.name}' is not servable: {info.note}")
+        app.state.model_aliases[alias] = info.name
+        log.info("model alias: %s -> %s", alias, info.name)
+        return {"name": alias, "model": info.name}
+
+    @app.get("/v1/aliases")
+    async def v1_aliases_list() -> dict[str, Any]:
+        return {"aliases": dict(app.state.model_aliases)}
+
+    def _inject_anthropic_spec(body: dict, cm: CreatedModel | None) -> None:
+        """Anthropic bodies: system prompt into the `system` field; params top-level."""
+        if cm is None:
+            return
+        if cm.system:
+            existing = body.get("system")
+            if isinstance(existing, str) and existing:
+                body["system"] = f"{existing}\n\n{cm.system}"
+            elif not existing:
+                body["system"] = cm.system
+        for k in ("temperature", "top_p"):
+            if k in cm.options and k not in body:
+                body[k] = cm.options[k]
+        if "num_predict" in cm.options and "max_tokens" not in body:
+            body["max_tokens"] = int(cm.options["num_predict"])
+
+    @app.post("/v1/messages")
+    async def v1_messages(request: Request):
+        body = await _json_body(request)
+        try:
+            info, requested, spec = await _resolve_with_spec(body)  # aliases + 'auto' + created
+            _inject_anthropic_spec(body, spec)
+            shown = requested if spec else info.name
+            worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
+            oai = anthropic.anthropic_chat_body(info.name, body)
+            if not oai.get("stream"):
+                async with manager.track(worker):
+                    resp = await forward.forward_json(worker, "/v1/chat/completions", oai)
+                return anthropic.anthropic_message(shown, resp)
+            return await _anthropic_stream(worker, shown, oai)
+        except HTTPException as e:
+            return _anthropic_error(e)
 
     return app
