@@ -74,15 +74,19 @@ done
 # NEXT TO a prebuilt venv/ that already contains vLLM + nvllm. In that case the
 # install is just "move it into place" — interpreter selection and pip are
 # skipped entirely (that is the whole point of the tarball).
+# (检测锚点是 install.sh 的同级目录，不是 REPO_ROOT：仓库布局里 venv/ 在
+#  scripts/ 的同级上级，发行布局里 venv/ 与 install.sh 同级。)
 PREBUILT=0
-if [ -x "$REPO_ROOT/venv/bin/python" ]; then
+PREBUILT_SRC=""
+if [ -x "$SCRIPT_DIR/venv/bin/python" ]; then
   PREBUILT=1
+  PREBUILT_SRC="$SCRIPT_DIR"
   # 防呆：落位是 rm -rf + cp -a，安装根与发行目录互为包含时会自我吞噬
   case "$ROOT/" in
-    "$REPO_ROOT"/*) die "install root ($ROOT) is inside the release dir ($REPO_ROOT) — set NVLLM_HOME elsewhere" ;;
+    "$PREBUILT_SRC"/*) die "install root ($ROOT) is inside the release dir ($PREBUILT_SRC) — set NVLLM_HOME elsewhere" ;;
   esac
-  case "$REPO_ROOT/" in
-    "$ROOT"/*) die "release dir ($REPO_ROOT) is inside the install root ($ROOT) — set NVLLM_HOME elsewhere" ;;
+  case "$PREBUILT_SRC/" in
+    "$ROOT"/*) die "release dir ($PREBUILT_SRC) is inside the install root ($ROOT) — set NVLLM_HOME elsewhere" ;;
   esac
 fi
 
@@ -93,7 +97,7 @@ if [ "$(uname -m)" != "aarch64" ]; then
 fi
 
 if [ "$PREBUILT" -eq 1 ]; then
-  PYTHON="$REPO_ROOT/venv/bin/python"
+  PYTHON="$PREBUILT_SRC/venv/bin/python"
   PYVER="$("$PYTHON" -c 'import platform; print(platform.python_version())')"
   log "prebuilt release — bundled venv (python $PYVER); pip steps will be skipped"
 else
@@ -138,9 +142,9 @@ if [ "$PREBUILT" -eq 1 ]; then
     log "existing venv found — replacing with the bundled one (upgrade)"
     run rm -rf "$ROOT/venv"
   fi
-  run cp -a "$REPO_ROOT/venv" "$ROOT/venv"
-  [ -f "$REPO_ROOT/LICENSE" ]  && run cp -f "$REPO_ROOT/LICENSE"  "$ROOT/LICENSE"
-  [ -f "$REPO_ROOT/README.md" ] && run cp -f "$REPO_ROOT/README.md" "$ROOT/README.md"
+  run cp -a "$PREBUILT_SRC/venv" "$ROOT/venv"
+  [ -f "$PREBUILT_SRC/LICENSE" ]  && run cp -f "$PREBUILT_SRC/LICENSE"  "$ROOT/LICENSE"
+  [ -f "$PREBUILT_SRC/README.md" ] && run cp -f "$PREBUILT_SRC/README.md" "$ROOT/README.md"
 elif [ -x "$ROOT/venv/bin/python" ]; then
   log "existing venv found — upgrading in place"
 else
