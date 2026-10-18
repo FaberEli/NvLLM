@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from . import __version__, anthropic, forward
@@ -40,6 +41,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await manager.stop_all()
 
     app = FastAPI(title="nvllm-serve", version=__version__, lifespan=lifespan)
+    # The browser demo report (index.html) and any web client may live on an
+    # arbitrary origin; the service is unauthenticated and LAN-oriented, so
+    # cross-origin calls are allowed (same posture as the default 0.0.0.0 bind).
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.settings = settings
     app.state.catalog = catalog
     app.state.manager = manager

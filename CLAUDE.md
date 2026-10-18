@@ -65,6 +65,8 @@ user-facing doc; this file is for working on the code.
   `_wait_ready`), so at most one model loads at a time; loaded models serve
   concurrently.
 - `main.py` — FastAPI assembly; `create_app(settings)` is what tests target.
+  **CORS**: `CORSMiddleware` allows any origin (browser clients + the `index.html`
+  demo panel; the service is an unauthenticated LAN tool — see README "Security").
   `_resolve_model(body)` resolves the request's model — **registered aliases**
   (`app.state.model_aliases`, set via `POST /v1/aliases`) are mapped back to the
   real catalog model first, then the `"auto"` alias triggers the Router (if
@@ -132,6 +134,11 @@ user-facing doc; this file is for working on the code.
   so Claude Code (`nvllm launch claude`) works against local models.
 - `render.py` — pure rendering helpers (`human_bytes`, `human_time`, `render_table`);
   no I/O, no deps — keep it that way.
+- `index.html` — **single-file interactive demo report** (zero external deps, opens
+  offline): feature/usage walkthrough + a live connect-and-chat panel that hits a
+  running service's `/api/*` (needs the CORS middleware above).
+  **Standing rule: keep it in sync with the code — update it on every GitHub sync**
+  (version numbers, features, CLI flags, endpoint changes).
 
 ## Conventions / gotchas
 

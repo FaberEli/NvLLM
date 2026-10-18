@@ -15,10 +15,16 @@ inference engine: one `nvllm` CLI, a resident model service, and local agents
 
 Built to serve **NVFP4-quantized** models at full speed on **DGX Spark (GB10)**
 unified memory. It discovers models from your local HuggingFace hub cache,
-serves them on a single fixed port (default **8004**), and exposes both the
-**Ollama** (`/api/*`) and **OpenAI** (`/v1/*`) APIs. Each model runs in its own
-`vllm serve` subprocess so crashes are isolated and the supervisor can reap and
-respawn.
+serves them on a single fixed port (default **8004**), and exposes the
+**Ollama** (`/api/*`), **OpenAI** (`/v1/*`) and **Anthropic** (`/v1/messages`)
+APIs. Each model runs in its own `vllm serve` subprocess so crashes are
+isolated and the supervisor can reap and respawn.
+
+> **Interactive demo report:** [`index.html`](index.html) — a single-file,
+> dependency-free walkthrough of the features and usage, with a live
+> connect-and-chat panel. Open it on a machine where `nvllm serve` is running
+> and the panel becomes a working client (the service sends permissive CORS
+> headers for browser clients).
 
 ## Ollama-style CLI (`nvllm`)
 
@@ -362,6 +368,10 @@ so on a multi-host machine anyone on the network can use your GPUs.
   `--host 127.0.0.1` (local only) or `--host 192.168.1.10`.
 - If you must expose it, put it behind a reverse proxy / VPN / firewall and add
   your own auth there. This service does not verify callers.
+- Browser (cross-origin) access is allowed by design — `Access-Control-Allow-Origin: *`
+  is sent on every response so web clients and the `index.html` demo panel work
+  from any origin. Same trust posture as the open bind; don't expose it
+  unauthenticated to the internet.
 
 Workers (the `vllm serve` subprocesses) always bind `127.0.0.1` regardless of
 `--host`, so only this service is directly reachable.

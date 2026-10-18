@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NvLLM — 本地常驻推理服务 · 演示报告</title>
+<meta name="description" content="NvLLM：Ollama 风格本地常驻推理服务（DGX Spark / GB10），NVFP4 全速，Ollama + OpenAI + Anthropic 三网关。">
+<style>
+  :root {
+    --bg: #0a0e14;
+    --bg2: #0e141d;
+    --panel: #111925;
+    --panel2: #0f1620;
+    --line: #1e2a3a;
+    --line2: #27364c;
+    --text: #d5e0ec;
+    --dim: #8496ab;
+    --faint: #5a6b80;
+    --accent: #2dd4bf;
+    --accent2: #38bdf8;
+    --amber: #fbbf24;
+    --rose: #fb7185;
+    --green: #4ade80;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.65 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  a { color: var(--accent2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: var(--mono); }
+  p code, li code, td code {
+    font-size: .86em; background: #16202e; border: 1px solid var(--line);
+    padding: .08em .38em; border-radius: 5px; color: #b7e7f9;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 20px; }
+
+  /* ---------- nav ---------- */
+  nav.top {
+    position: sticky; top: 0; z-index: 50;
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  nav.top .wrap { display: flex; align-items: center; gap: 18px; height: 52px; }
+  nav.top .logo { font-weight: 700; letter-spacing: .02em; color: #fff; }
+  nav.top .logo b { color: var(--accent); font-weight: 700; }
+  nav.top .links { display: flex; gap: 14px; margin-left: auto; flex-wrap: wrap; }
+  nav.top .links a { color: var(--dim); font-size: 13px; }
+  nav.top .links a:hover { color: var(--text); text-decoration: none; }
+
+  /* ---------- hero ---------- */
+  header.hero {
+    padding: 72px 0 56px;
+    background:
+      radial-gradient(900px 380px at 18% -10%, rgba(45,212,191,.14), transparent 60%),
+      radial-gradient(700px 320px at 85% -20%, rgba(56,189,248,.12), transparent 60%),
+      var(--bg);
+    border-bottom: 1px solid var(--line);
+  }
+  .hero h1 { margin: 0 0 10px; font-size: 40px; line-height: 1.15; letter-spacing: -.01em; color: #fff; }
+  .hero h1 .grad {
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero .sub { max-width: 720px; color: var(--dim); font-size: 16px; margin: 0 0 22px; }
+  .hero .sub b { color: var(--text); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 26px; }
+  .chip {
+    font-size: 12px; color: var(--dim); border: 1px solid var(--line2);
+    padding: 4px 10px; border-radius: 999px; background: var(--panel2);
+  }
+  .chip b { color: var(--accent); font-weight: 600; }
+  .rowbtns { display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+    border: 1px solid var(--line2); background: var(--panel); color: var(--text);
+    padding: 9px 16px; border-radius: 9px; font-size: 14px; font-family: inherit;
+  }
+  .btn:hover { border-color: var(--accent); text-decoration: none; }
+  .btn.primary { background: linear-gradient(135deg, rgba(45,212,191,.16), rgba(56,189,248,.16)); border-color: rgba(45,212,191,.5); }
+  .oneline {
+    margin-top: 22px; display: flex; align-items: center; gap: 10px;
+    background: #0b1119; border: 1px solid var(--line2); border-radius: 10px;
+    padding: 12px 14px; font-family: var(--mono); font-size: 13px; color: #bfe9df;
+    overflow-x: auto; white-space: nowrap;
+  }
+  .oneline .dollar { color: var(--green); }
+
+  /* ---------- sections ---------- */
+  section { padding: 54px 0 8px; }
+  section + section { border-top: 1px solid var(--line); }
+  h2 { font-size: 25px; margin: 0 0 6px; color: #fff; letter-spacing: -.01em; }
+  h2 .no { color: var(--accent); font-family: var(--mono); font-size: .72em; margin-right: 10px; vertical-align: 2px; }
+  .lede { color: var(--dim); margin: 0 0 26px; max-width: 760px; }
+  h3 { font-size: 16px; color: #eaf2f9; margin: 26px 0 10px; }
+
+  /* ---------- grid cards ---------- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  .card {
+    background: linear-gradient(180deg, var(--panel), var(--panel2));
+    border: 1px solid var(--line); border-radius: 12px; padding: 16px 16px 14px;
+    transition: border-color .15s, transform .15s;
+  }
+  .card:hover { border-color: var(--line2); transform: translateY(-2px); }
+  .card .ico { font-size: 19px; }
+  .card h4 { margin: 8px 0 6px; font-size: 14.5px; color: #fff; }
+  .card p { margin: 0; font-size: 13px; color: var(--dim); }
+  .card p code { font-size: 11.5px; }
+
+  /* ---------- terminal ---------- */
+  .term {
+    border: 1px solid var(--line2); border-radius: 12px; overflow: hidden;
+    background: #0b1017; margin: 14px 0 22px;
+  }
+  .term .bar {
+    display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+    background: #101722; border-bottom: 1px solid var(--line);
+  }
+  .term .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .term .dot.r { background: #f5575e; } .term .dot.y { background: #f4bf4f; } .term .dot.g { background: #49c467; }
+  .term .title { margin-left: 8px; font-size: 12px; color: var(--faint); font-family: var(--mono); }
+  .term .copy {
+    margin-left: auto; font-size: 11.5px; color: var(--dim); cursor: pointer;
+    border: 1px solid var(--line2); background: transparent; border-radius: 6px; padding: 3px 9px;
+    font-family: inherit;
+  }
+  .term .copy:hover { color: var(--text); border-color: var(--accent); }
+  .term pre {
+    margin: 0; padding: 14px 16px; overflow-x: auto; font-size: 12.8px; line-height: 1.62;
+    color: #c6d4e2;
+  }
+  .term .p { color: var(--green); }   /* prompt $ */
+  .term .c { color: var(--faint); }   /* comment */
+  .term .o { color: #9fb2c7; }        /* output */
+  .term .h { color: var(--amber); }   /* highlight in output */
+  .term .tool { color: var(--accent); }
+  .term .err { color: var(--rose); }
+
+  /* ---------- tables ---------- */
+  table.tbl { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 13.5px; }
+  table.tbl th {
+    text-align: left; color: var(--faint); font-size: 12px; text-transform: uppercase;
+    letter-spacing: .06em; padding: 8px 10px; border-bottom: 1px solid var(--line2);
+  }
+  table.tbl td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.tbl tr:last-child td { border-bottom: none; }
+  table.tbl td code { white-space: nowrap; }
+
+  /* ---------- arch diagram ---------- */
+  .arch { display: flex; flex-direction: column; gap: 0; margin: 18px 0 8px; }
+  .arch .layer {
+    border: 1px solid var(--line2); border-radius: 12px; padding: 14px 16px;
+    background: linear-gradient(180deg, var(--panel), var(--panel2));
+  }
+  .arch .layer .lt { font-size: 12px; color: var(--faint); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 8px; }
+  .arch .boxes { display: flex; gap: 10px; flex-wrap: wrap; }
+  .arch .box {
+    flex: 1 1 150px; min-width: 140px; border: 1px solid var(--line); background: #0d141f;
+    border-radius: 9px; padding: 9px 11px; font-size: 12.5px; color: var(--dim);
+  }
+  .arch .box b { display: block; color: var(--text); font-size: 13px; margin-bottom: 2px; }
+  .arch .arrow {
+    align-self: center; color: var(--accent); font-size: 18px; padding: 4px 0;
+    text-align: center; letter-spacing: 3px;
+  }
+  .arch .box.core { border-color: rgba(45,212,191,.55); background: linear-gradient(160deg, rgba(45,212,191,.10), rgba(56,189,248,.06)); }
+
+  /* ---------- live panel ---------- */
+  .live {
+    border: 1px solid rgba(45,212,191,.35); border-radius: 14px;
+    background:
+      radial-gradient(500px 200px at 90% -40%, rgba(45,212,191,.10), transparent 60%),
+      var(--panel2);
+    padding: 20px; margin: 16px 0 24px;
+  }
+  .live .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .live input[type=url] {
+    flex: 1 1 260px; background: #0b1119; border: 1px solid var(--line2); color: var(--text);
+    border-radius: 8px; padding: 9px 12px; font-family: var(--mono); font-size: 13px;
+  }
+  .live input[type=url]:focus { outline: none; border-color: var(--accent); }
+  .statusdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--faint); margin-right: 7px; }
+  .statusdot.on { background: var(--green); box-shadow: 0 0 8px rgba(74,222,128,.7); }
+  .statusdot.err { background: var(--rose); }
+  .live .note { font-size: 12.5px; color: var(--faint); margin: 10px 0 0; }
+  .live .models { margin-top: 14px; }
+  .live .models table.tbl { margin: 8px 0 0; }
+  .chatbox { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  .chatbox select {
+    background: #0b1119; color: var(--text); border: 1px solid var(--line2);
+    border-radius: 8px; padding: 9px 10px; font-family: inherit; font-size: 13px; max-width: 320px;
+  }
+  .chatbox input {
+    flex: 1 1 220px; background: #0b1119; border: 1px solid var(--line2); color: var(--text);
+    border-radius: 8px; padding: 9px 12px; font-family: inherit; font-size: 13.5px;
+  }
+  .chatbox input:focus, .chatbox select:focus { outline: none; border-color: var(--accent); }
+  .reply {
+    margin-top: 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    background: #0b1119; border-radius: 8px; padding: 12px 14px; font-size: 13.5px;
+    white-space: pre-wrap; max-height: 300px; overflow-y: auto;
+  }
+  .live .hint { color: var(--faint); font-size: 12.5px; margin-top: 10px; }
+  .live .hint b { color: var(--dim); }
+
+  /* ---------- bench stats ---------- */
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px; margin: 16px 0 22px; }
+  .stat {
+    border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+    background: linear-gradient(180deg, var(--panel), var(--panel2));
+  }
+  .stat .v { font-size: 26px; font-weight: 700; color: #fff; font-family: var(--mono); letter-spacing: -.02em; }
+  .stat .v small { font-size: 13px; color: var(--dim); font-weight: 400; margin-left: 4px; }
+  .stat .k { font-size: 12.5px; color: var(--dim); margin-top: 4px; }
+  .stat .v.amber { color: var(--amber); }
+  .stat .v.teal { color: var(--accent); }
+
+  /* ---------- timeline ---------- */
+  .tl { position: relative; margin: 18px 0 24px; padding-left: 22px; }
+  .tl::before { content: ""; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 2px; background: linear-gradient(180deg, var(--accent), var(--line)); }
+  .tl .item { position: relative; padding: 0 0 16px 12px; }
+  .tl .item::before {
+    content: ""; position: absolute; left: -20px; top: 7px; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--bg); border: 2px solid var(--accent);
+  }
+  .tl .item .m { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .tl .item .t { color: var(--text); font-size: 14px; }
+  .tl .item .d { color: var(--dim); font-size: 13px; }
+
+  /* ---------- footer ---------- */
+  footer {
+    margin-top: 60px; border-top: 1px solid var(--line); padding: 30px 0 44px;
+    color: var(--faint); font-size: 13px; background: var(--bg2);
+  }
+  footer .links { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 12px; }
+  footer code { font-size: 11.5px; word-break: break-all; }
+
+  /* ---------- misc ---------- */
+  .kv { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0; }
+  .kv .k2 {
+    font-size: 12.5px; color: var(--dim); border: 1px dashed var(--line2); border-radius: 8px; padding: 7px 11px;
+  }
+  .kv .k2 b { color: var(--text); font-weight: 600; }
+  .callout {
+    border: 1px solid var(--line2); border-left: 3px solid var(--amber);
+    background: #10161f; border-radius: 8px; padding: 12px 14px; margin: 16px 0; font-size: 13.5px; color: var(--dim);
+  }
+  .callout b { color: var(--text); }
+  .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease; }
+  .reveal.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1; transform: none; transition: none; }
+    html { scroll-behavior: auto; }
+  }
+  @media (max-width: 640px) {
+    .hero h1 { font-size: 30px; }
+    nav.top .links { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <div class="logo">Nv<b>LLM</b></div>
+    <div class="links">
+      <a href="#quickstart">快速上手</a>
+      <a href="#features">功能</a>
+      <a href="#cli">CLI</a>
+      <a href="#api">API</a>
+      <a href="#arch">架构</a>
+      <a href="#live">在线实测</a>
+      <a href="#bench">性能</a>
+      <a href="#history">路线图</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="chips">
+      <span class="chip"><b>v0.4.0</b> 已发布</span>
+      <span class="chip">DGX Spark · GB10</span>
+      <span class="chip">NVFP4 全速</span>
+      <span class="chip">Apache-2.0</span>
+      <span class="chip">143 tests green</span>
+    </div>
+    <h1>NvLLM <span class="grad">本地常驻推理服务</span></h1>
+    <p class="sub">
+      把 <b>Ollama 的交互</b>、<b>OpenAI 的生态</b>、<b>Anthropic 的接口</b>收进同一个本地服务——
+      模型来自你的 HuggingFace 缓存，<b>NVFP4 量化全速运行</b>，专为 DGX Spark 128GB 统一内存调优。
+      一条命令安装，三种协议开箱即用，还能一键拉起 Claude Code 等本地编码 Agent。
+    </p>
+    <div class="rowbtns">
+      <a class="btn primary" href="https://github.com/FaberEli/NvLLM">GitHub 仓库</a>
+      <a class="btn" href="https://github.com/FaberEli/NvLLM/releases/tag/0.4.0">Release 0.4.0</a>
+      <a class="btn" href="#live">在线实测 ↓</a>
+    </div>
+    <div class="oneline">
+      <span class="dollar">$</span>
+      <span id="oneline-cmd">curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash</span>
+      <button class="copy" onclick="copyText('oneline-cmd', this)">复制</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+<!-- ================= 快速上手 ================= -->
+<section id="quickstart">
+  <h2><span class="no">01</span>30 秒上手</h2>
+  <p class="lede">目标机器只需要 Linux aarch64 + CUDA GPU + 约 10GB 空闲磁盘——tarball 自带预构建 venv（vLLM 0.31.0），<b>不需要装 Python / pip</b>。</p>
+
+  <div class="term">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — 安装 &amp; 启动</span><button class="copy">复制</button></div>
+    <pre><span class="p">$</span> <span>curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash</span>
+<span class="c"># → 下载自包含 tarball（本版本为两个 &lt;2GB 分卷，脚本自动重拼）→ 安装到 ~/.nvllm</span>
+<span class="c">#   如需 systemd 用户服务，安装时加：--with-service</span>
+
+<span class="p">$</span> <span>nvllm serve</span>   <span class="c"># 或已装 --with-service 时自动常驻；默认监听 0.0.0.0:8004</span>
+<span class="o">discovered 36 model(s) under ~/.cache/huggingface/hub</span>
+
+<span class="p">$</span> <span>nvllm list</span>
+<span class="o">NAME                                        ID           SIZE      MODIFIED
+meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    2 weeks ago
+Qwen/Qwen3-8B                              5e6f7a8b     16.0 GB   3 days ago
+nvidia/Nemotron-Nano-9B-v2-NVFP4           9c0d1e2f     6.1 GB    5 days ago</span>
+<span class="c">…（示例输出；模型池 = 你本机 HF 缓存里已有的模型，NvLLM 不下载模型）</span></pre>
+  </div>
+
+  <h3>三个协议网关，同一个端口</h3>
+  <p class="lede" style="margin-bottom:10px">任何现成的客户端指到 <code>http://localhost:8004</code> 就能用，零配置、无鉴权（内网工具定位，勿直接暴露公网）。</p>
+  <table class="tbl">
+    <tr><th>网关</th><th>关键端点</th><th>典型客户端</th></tr>
+    <tr><td><b>Ollama</b></td><td><code>/api/chat</code> <code>/api/generate</code> <code>/api/tags</code> <code>/api/show</code></td><td>Ollama 生态应用、本仓库 <code>nvllm</code> CLI</td></tr>
+    <tr><td><b>OpenAI</b></td><td><code>/v1/chat/completions</code> <code>/v1/models</code> <code>/v1/completions</code> <code>/v1/embeddings</code></td><td>OpenAI SDK、LangChain、各种 OpenAI 兼容工具</td></tr>
+    <tr><td><b>Anthropic</b></td><td><code>/v1/messages</code>（含 SSE 流式）</td><td>Claude Code（<code>nvllm launch claude</code>）、Anthropic SDK</td></tr>
+  </table>
+
+  <div class="kv">
+    <span class="k2"><b>端口</b> 默认 8004（<code>NVLLM_PORT</code>）</span>
+    <span class="k2"><b>模型池</b> 本地 HF 缓存，<code>hf download &lt;org&gt;/&lt;name&gt;</code> 补充</span>
+    <span class="k2"><b>并发</b> <code>--max-models</code> 控制常驻模型数（默认 1）</span>
+    <span class="k2"><b>路由</b> <code>--router-judge &lt;模型&gt;</code> 开启 <code>model:"auto"</code></span>
+  </div>
+</section>
+
+<!-- ================= 功能全景 ================= -->
+<section id="features">
+  <h2><span class="no">02</span>功能全景</h2>
+  <p class="lede">v0.4.0 的完整能力面——每一条都有测试覆盖（143 tests）或 E2E 验证。</p>
+  <div class="grid">
+    <div class="card reveal"><div class="ico">🖥️</div><h4>Ollama 风格 CLI</h4><p><code>serve / list / show / run / ps / stop / version / create / rm / launch</code>，<code>run</code> 支持一次性提问与交互式 REPL。</p></div>
+    <div class="card reveal"><div class="ico">🔌</div><h4>三协议网关</h4><p>Ollama ↔ OpenAI 双向翻译，Anthropic Messages API 原生翻译，SSE / NDJSON 流式全通。</p></div>
+    <div class="card reveal"><div class="ico">🧩</div><h4>虚拟模型 create</h4><p><code>nvllm create</code> 在任意缓存模型上叠加名字 + system prompt + 采样参数——无权重、共享 worker。</p></div>
+    <div class="card reveal"><div class="ico">🧭</div><h4>Router 自动路由</h4><p><code>model:"auto"</code> 让 judge 模型从候选池里选目标；候选白名单防 OOM，judge 常驻不驱逐。</p></div>
+    <div class="card reveal"><div class="ico">👁️</div><h4>视觉 + 工具调用</h4><p><code>run --image</code>（可重复）传图提问；<code>--tools FILE</code> / REPL <code>/tools</code> 加载 OpenAI 风格工具。</p></div>
+    <div class="card reveal"><div class="ico">🤖</div><h4>launch 本地 Agent</h4><p><code>nvllm launch claude</code> 等 6 种编码 Agent 直接跑在本地模型上（Claude Code 已 E2E 验证）。</p></div>
+    <div class="card reveal"><div class="ico">⚡</div><h4>多模型并发驻留</h4><p><code>--max-models</code> 并发常驻；过期优先、LRU 腾位；<code>inflight</code> 保护在途请求（含流式期间）不被回收。</p></div>
+    <div class="card reveal"><div class="ico">📦</div><h4>自包含发行</h4><p>预构建 venv + vLLM 0.31 打进 tarball；一键 install / update / uninstall，可选 systemd 用户服务。</p></div>
+  </div>
+</section>
+
+<!-- ================= CLI 实战 ================= -->
+<section id="cli">
+  <h2><span class="no">03</span>CLI 实战</h2>
+  <p class="lede">一个 <code>nvllm</code> 入口覆盖日常全部操作。以下输出为示例格式（真实数据见下一节「在线实测」）。</p>
+
+  <h3>对话：一次性 &amp; REPL</h3>
+  <div class="term">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — nvllm run</span><button class="copy">复制</button></div>
+    <pre><span class="p">$</span> <span>nvllm run Qwen/Qwen3-8B "用一句话解释统一内存（unified memory）"</span>
+<span class="o">统一内存指 CPU 与 GPU 共享同一段物理内存池，无需显式搬运数据，</span>
+<span class="o">适合大模型推理这类内存带宽受限的工作负载。</span>
+<span class="o">23.4 tok/s — 58 tokens in 2.5s</span>   <span class="c"># 加 -v 显示吞吐统计</span>
+
+<span class="c"># —— 不带 prompt 进入 REPL ——</span>
+<span class="p">$</span> <span>nvllm run meta-llama/Llama-3.1-8B-Instruct-NVFP4</span>
+<span class="o">nvllm run meta-llama/Llama-3.1-8B-Instruct-NVFP4 — /help for commands, /bye to exit</span>
+<span class="p">meta-llama/Llama-3.1-8B-Instruct-NVFP4 &gt;&gt;&gt;</span> <span>写个函数把摄氏度转成华氏度</span>
+<span class="o">def c2f(c: float) -&gt; float:</span>
+<span class="o">    return c * 9 / 5 + 32</span>
+<span class="p">meta-llama/Llama-3.1-8B-Instruct-NVFP4 &gt;&gt;&gt;</span> <span class="h">/set temperature 0.3</span>
+<span class="p">meta-llama/Llama-3.1-8B-Instruct-NVFP4 &gt;&gt;&gt;</span> <span class="h">/tools ~/tools.json</span>
+<span class="p">meta-llama/Llama-3.1-8B-Instruct-NVFP4 &gt;&gt;&gt;</span> <span>上海现在天气怎么样？</span>
+<span class="o">⚙ tool: get_weather(city="上海")</span>
+<span class="o">上海当前晴，26°C…</span>
+<span class="p">meta-llama/Llama-3.1-8B-Instruct-NVFP4 &gt;&gt;&gt;</span> <span class="h">/show</span>          <span class="c"># 看当前模型详情</span>
+<span class="p">meta-llama/Llama-3.1-8B-Instruct-NVFP4 &gt;&gt;&gt;</span> <span class="h">/clear</span>         <span class="c"># 清空对话历史</span>
+<span class="p">meta-llama/Llama-3.1-8B-Instruct-NVFP4 &gt;&gt;&gt;</span> <span class="h">/bye</span></pre>
+  </div>
+
+  <div class="callout">
+    <b>视觉与工具：</b><code>nvllm run &lt;模型&gt; --image 截图.png "这张图里是什么？"</code>（<code>--image</code> 可重复传多张）；
+    <code>--tools tools.json</code> 加载 OpenAI 风格工具（一次性模式），REPL 里用 <code>/tools FILE</code>。
+    工具调用会实时打印为 <code>⚙ tool: name(args)</code>。
+  </div>
+
+  <h3>虚拟模型：同一个底座，不同的人格</h3>
+  <div class="term">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — nvllm create / rm</span><button class="copy">复制</button></div>
+    <pre><span class="p">$</span> <span>nvllm create code-reviewer --from meta-llama/Llama-3.1-8B-Instruct-NVFP4 \</span>
+    <span>--system "你是一名严格的代码评审员：先列问题，再给建议，最后给修正。" --temperature 0.3</span>
+<span class="o">created 'code-reviewer' (base: meta-llama/Llama-3.1-8B-Instruct-NVFP4)</span>
+
+<span class="p">$</span> <span>nvllm show code-reviewer</span>
+<span class="o">code-reviewer</span>
+<span class="o">  family           Llama</span>
+<span class="o">  capabilities     completion</span>
+<span class="o">  system prompt:</span>
+<span class="o">    你是一名严格的代码评审员：先列问题，再给建议，最后给修正。</span>
+<span class="o">  options:</span>
+<span class="o">    temperature = 0.3</span>
+<span class="o">  run: nvllm run code-reviewer</span>
+
+<span class="c"># 虚拟模型与底座共享同一个 worker（不额外占显存），请求时逐条注入 system + 参数，</span>
+<span class="c"># 且本次请求里显式给出的参数优先。删除：</span>
+<span class="p">$</span> <span>nvllm rm code-reviewer</span>
+<span class="o">deleted 'code-reviewer'</span></pre>
+  </div>
+
+  <h3>拉起本地编码 Agent</h3>
+  <div class="term">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — nvllm launch</span><button class="copy">复制</button></div>
+    <pre><span class="p">$</span> <span>nvllm launch --list</span>
+<span class="o">AGENT      PROTOCOL    STATUS
+claude     anthropic   /home/eli/.npm-global/bin/claude
+codex      openai      not installed — npm install -g @openai/codex
+qwen       openai      not installed — npm install -g @qwen-code/qwen-code
+gemini     openai      not installed — npm install -g @google/gemini-cli
+opencode   openai      not installed — curl -fsSL https://opencode.ai/install | bash
+aider      openai      not installed — pip install aider-chat</span>
+
+<span class="c"># 一次性任务：agent 名之后的参数原样透传</span>
+<span class="p">$</span> <span>nvllm launch claude -p "把 README 的 Install 段落翻译成中文，输出到 install-zh.md"</span>
+<span class="o">nvllm: claude config: ~/.local/share/nvllm-serve/claude-launch (model 'Qwen/Qwen3-8B')
+nvllm: launching Claude Code → model 'Qwen/Qwen3-8B' @ http://127.0.0.1:8004</span>
+<span class="c"># Claude Code 全程走 POST /v1/messages → 本地模型（E2E 已验证）</span>
+
+<span class="c"># 交互式：进入 agent，模型默认选最大 completion 模型，</span>
+<span class="c"># 可用 -m / $NVLLM_LAUNCH_MODEL 指定</span>
+<span class="p">$</span> <span>nvllm launch claude</span></pre>
+  </div>
+
+  <div class="callout">
+    <b>注意（Claude Code）：</b>它始终发送 <code>tools</code> + <code>tool_choice:"auto"</code>，
+    worker 需带 <code>NVLLM_WORKER_EXTRA_ARGS="--enable-auto-tool-choice --tool-call-parser hermes"</code>
+    （parser 按模型族选）启动，否则请求 400。<code>launch</code> 会按所选 agent 自动写好所需配置。
+  </div>
+
+  <h3>服务管理</h3>
+  <div class="term">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — ps / stop / version</span><button class="copy">复制</button></div>
+    <pre><span class="p">$</span> <span>nvllm ps</span>
+<span class="o">NAME                                        ID           SIZE      PROCESSOR    UNTIL
+meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5 minutes from now</span>
+
+<span class="p">$</span> <span>nvllm stop meta-llama/Llama-3.1-8B-Instruct-NVFP4</span>
+<span class="o">unloaded 'meta-llama/Llama-3.1-8B-Instruct-NVFP4'</span>
+
+<span class="p">$</span> <span>nvllm version</span>
+<span class="o">nvllm 0.4.0</span>
+<span class="o">server  nvllm-serve 0.4.0 @ http://127.0.0.1:8004</span></pre>
+  </div>
+</section>
+
+<!-- ================= API ================= -->
+<section id="api">
+  <h2><span class="no">04</span>API 三网关</h2>
+  <p class="lede">同一份本地模型池，三种方言。流式全部支持（Ollama NDJSON / OpenAI SSE / Anthropic SSE）。</p>
+
+  <h3>Ollama 方言</h3>
+  <div class="term">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — /api/chat</span><button class="copy">复制</button></div>
+    <pre><span class="p">$</span> <span>curl -s http://localhost:8004/api/chat -H 'Content-Type: application/json' -d '{
+  "model": "meta-llama/Llama-3.1-8B-Instruct-NVFP4",
+  "messages": [{"role": "user", "content": "用一句话介绍你自己"}],
+  "stream": false
+}'</span>
+<span class="o">{"model": "meta-llama/Llama-3.1-8B-Instruct-NVFP4", "created_at": "…", "message": {"role": "assistant", "content": "我是 Llama 3.1 8B……"}, "done": true, "eval_count": 28, "eval_duration": 1.05e+09}</span></pre>
+  </div>
+
+  <h3>OpenAI 方言（流式 SSE）</h3>
+  <div class="term">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — /v1/chat/completions</span><button class="copy">复制</button></div>
+    <pre><span class="p">$</span> <span>curl -N http://localhost:8004/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model": "Qwen/Qwen3-8B", "stream": true,
+  "messages": [{"role": "user", "content": "写一首关于 GPU 的四行诗"}]
+}'</span>
+<span class="o">data: {"id": "chatcmpl-…", "object": "chat.completion.chunk", "choices": [{"delta": {"content": "显"}}]}</span>
+<span class="o">data: {"id": "chatcmpl-…", "choices": [{"delta": {"content": "存"}}]}</span>
+<span class="o">…</span>
+<span class="o">data: {"id": "chatcmpl-…", "choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 21, "completion_tokens": 47, "total_tokens": 68}}</span>
+<span class="o">data: [DONE]</span></pre>
+  </div>
+
+  <h3>Anthropic 方言（Claude Code 走的就是它）</h3>
+  <div class="term">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — /v1/messages</span><button class="copy">复制</button></div>
+    <pre><span class="p">$</span> <span>curl -s http://localhost:8004/v1/messages -H 'Content-Type: application/json' -d '{
+  "model": "Qwen/Qwen3-8B", "max_tokens": 256,
+  "messages": [{"role": "user", "content": "用一句话解释 NVFP4"}]
+}'</span>
+<span class="o">{"id": "msg_…", "type": "message", "role": "assistant", "model": "Qwen/Qwen3-8B",</span>
+<span class="o"> "content": [{"type": "text", "text": "NVFP4 是一种 4-bit 浮点量化格式……"}],</span>
+<span class="o"> "stop_reason": "end_turn", "stop_sequence": null,</span>
+<span class="o"> "usage": {"input_tokens": 19, "output_tokens": 41}}</span></pre>
+  </div>
+
+  <h3>Router：让服务替你挑模型</h3>
+  <div class="term">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — model: "auto"</span><button class="copy">复制</button></div>
+    <pre><span class="c"># 启动时指定 judge（它常驻、不计入 --max-models 名额、永不被驱逐）</span>
+<span class="p">$</span> <span>nvllm serve --router-judge Qwen/Qwen3-8B \
+    --router-candidates meta-llama/Llama-3.1-8B-Instruct-NVFP4,Qwen/Qwen3-8B</span>
+
+<span class="p">$</span> <span>curl -s http://localhost:8004/api/chat -d '{
+  "model": "auto",
+  "messages": [{"role": "user", "content": "1+1 等于几？"}]
+}'</span>
+<span class="c"># → judge 判断这是简单任务，路由到更轻的目标模型作答；</span>
+<span class="c">#   候选白名单（--router-candidates）防止 judge 选到装不下的模型</span></pre>
+  </div>
+</section>
+
+<!-- ================= 架构 ================= -->
+<section id="arch">
+  <h2><span class="no">05</span>架构与生命周期</h2>
+  <p class="lede">单进程 FastAPI 服务 + 每模型一个 <code>vllm serve</code> 子进程（worker），进程间只走 127.0.0.1 HTTP——服务崩溃不拖垮 worker，worker 崩溃被 monitor 标记并拒绝复用。</p>
+
+  <div class="arch">
+    <div class="layer">
+      <div class="lt">客户端</div>
+      <div class="boxes">
+        <div class="box"><b>Ollama 生态</b>应用 / 脚本</div>
+        <div class="box"><b>OpenAI SDK</b>LangChain 等</div>
+        <div class="box"><b>Claude Code</b>nvllm launch claude</div>
+        <div class="box"><b>浏览器 / 本页面</b>在线实测面板</div>
+      </div>
+    </div>
+    <div class="arrow">↓ HTTP :8004（Ollama / OpenAI / Anthropic 三协议）↓</div>
+    <div class="layer">
+      <div class="lt">NvLLM 服务（单进程，无 GPU 占用）</div>
+      <div class="boxes">
+        <div class="box core"><b>discovery</b>扫描 HF 缓存 → 模型池 + 能力（completion / embedding / tools）</div>
+        <div class="box core"><b>协议翻译</b>Ollama ↔ OpenAI ↔ Anthropic，含流式</div>
+        <div class="box core"><b>Router</b>judge 选模型（auto），常驻</div>
+        <div class="box core"><b>created store</b>虚拟模型（system + 参数，无权重）</div>
+      </div>
+    </div>
+    <div class="arrow">↓ 127.0.0.1 临时端口（OpenAI 原生协议）↓</div>
+    <div class="layer">
+      <div class="lt">workers（每模型一个 vllm serve 子进程）</div>
+      <div class="boxes">
+        <div class="box"><b>NVFP4 推理</b>GPU · 统一内存</div>
+        <div class="box"><b>JIT 缓存</b>FlashInfer / inductor 持久</div>
+        <div class="box"><b>日志</b>独立日志文件，排障直接看</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>驻留与回收策略</h3>
+  <table class="tbl">
+    <tr><th>规则</th><th>说明</th></tr>
+    <tr><td>并发驻留</td><td><code>--max-models N</code>：同一时刻最多 N 个非 judge 模型常驻；加载串行（spawn+ready 全程持锁），就绪后并发服务。</td></tr>
+    <tr><td>腾位顺序</td><td>需要加载新模型时先驱逐<b>已过期</b>（超过 keep-alive），再按 <b>LRU</b>（最近最少使用）。</td></tr>
+    <tr><td>在途保护</td><td><code>inflight &gt; 0</code> 的 worker 永不回收——包括<b>流式输出进行中</b>（流式转发自身持有 inflight 直到流结束）。</td></tr>
+    <tr><td>Router judge</td><td>不计入名额、永不驱逐、也不参与腾位。</td></tr>
+    <tr><td>崩溃处理</td><td>monitor 定期体检：worker 崩溃 → 标记 errored（后续请求得到明确报错）；空闲过期 → 卸载释放显存。</td></tr>
+  </table>
+
+  <h3>DGX Spark（GB10）调优要点</h3>
+  <div class="kv">
+    <span class="k2"><b>128GB 统一内存</b> worker <code>gpu-memory-utilization</code> 默认 0.5（vLLM 默认 0.92 在 GB10 上会失败）</span>
+    <span class="k2"><b>N 模型共存</b> 每个 worker 的占比相对<b>总内存</b>：N×U ≤ 1，如 2 模型 → U≈0.35</span>
+    <span class="k2"><b>JIT 防爆内存</b> <code>MAX_JOBS=2</code> 限制 FlashInfer 并行编译（默认并发会 OOM-kill nvcc）</span>
+    <span class="k2"><b>Python 3.12</b> vLLM 0.31 仅发 3.10–3.13 wheel，安装脚本自动选 3.12</span>
+  </div>
+</section>
+
+<!-- ================= 在线实测 ================= -->
+<section id="live">
+  <h2><span class="no">06</span>在线实测</h2>
+  <p class="lede">这个页面可以直接连到你本机的 NvLLM 服务（服务端已开启 CORS）。在一台运行着 <code>nvllm serve</code> 的机器上打开本页面，下面的面板就是活的。</p>
+
+  <div class="live">
+    <div class="controls">
+      <span class="statusdot" id="livedot"></span>
+      <span id="livestatus" style="font-size:13px;color:var(--dim)">未连接</span>
+      <input type="url" id="liveurl" value="http://127.0.0.1:8004" spellcheck="false">
+      <button class="btn primary" id="liveconnect">连接</button>
+    </div>
+    <div id="livebody">
+      <p class="hint">连接后这里会列出该服务的 <b>模型池</b>（GET /api/tags）与 <b>版本</b>（GET /api/version），并可以直接发起一次对话（POST /api/chat）。</p>
+    </div>
+    <p class="note">提示：流式输出、工具调用、Anthropic 网关请用任意支持 SSE 的客户端体验（见上方 curl 示例）；本面板只做最小连通性演示。所有请求只发往你填写的 URL，不经过任何第三方。</p>
+  </div>
+</section>
+
+<!-- ================= 性能 ================= -->
+<section id="bench">
+  <h2><span class="no">07</span>性能数据</h2>
+  <p class="lede">DGX Spark（GB10，128GB 统一内存）实测 · <code>Llama-3.1-8B-NVFP4</code> · 2026-10</p>
+  <div class="stats">
+    <div class="stat reveal"><div class="v teal">~600 <small>tok/s</small></div><div class="k">聚合吞吐（并发 ~16，GPU 饱和）</div></div>
+    <div class="stat reveal"><div class="v">~41 <small>tok/s</small></div><div class="k">每流吞吐（16 路并发时）</div></div>
+    <div class="stat reveal"><div class="v">~24.5 <small>ms/tok</small></div><div class="k">TPOT（稳定，随并发波动很小）</div></div>
+    <div class="stat reveal"><div class="v amber">52–115 <small>ms</small></div><div class="k">TTFT（256–2048 词 prompt）</div></div>
+  </div>
+  <div class="callout">
+    <b>冷启动：</b>首次加载 NVFP4 模型约 <b>2 分 45 秒</b>（FlashInfer CUTLASS kernel JIT 编译，<code>MAX_JOBS=2</code> 防 OOM）；
+    JIT 结果缓存后，后续加载显著变快。keep-alive 机制让热门模型常驻，日常请求直接命中热 worker。
+  </div>
+  <div class="callout">
+    <b>Router 经验值：</b>非推理型 judge（如 Llama-3.1-8B-Instruct）路由判断干净利落；
+    推理型模型（Nemotron-Nano、Qwen thinking）会先输出思考过程再给模型名，<b>不适合当 judge</b>。
+  </div>
+</section>
+
+<!-- ================= 路线图 ================= -->
+<section id="history">
+  <h2><span class="no">08</span>路线图（M1 → M12）</h2>
+  <p class="lede">每个里程碑 = 一次深度功能补全 + 结构优化 + 全量测试回归。</p>
+  <div class="tl">
+    <div class="item reveal"><span class="m">M1</span> <span class="t">模型发现 + 元数据 API</span><span class="d"> — 扫描 HF 缓存、<code>/api/*</code>、<code>/v1/models</code>、worker 进程管理</span></div>
+    <div class="item reveal"><span class="m">M2</span> <span class="t">推理代理</span><span class="d"> — Ollama ↔ OpenAI 双向翻译 + SSE/NDJSON 流式</span></div>
+    <div class="item reveal"><span class="m">M3</span> <span class="t">Router</span><span class="d"> — <code>model:"auto"</code> 自动选模型，judge 常驻</span></div>
+    <div class="item reveal"><span class="m">M4</span> <span class="t">NVFP4 端到端</span><span class="d"> — Spark 实测跑通 + worker 环境修复（ninja/MAX_JOBS）</span></div>
+    <div class="item reveal"><span class="m">M5</span> <span class="t">多模型并发</span><span class="d"> — <code>--max-models</code>、LRU 驱逐、inflight 在途保护、keep-alive 真正回收</span></div>
+    <div class="item reveal"><span class="m">M6</span> <span class="t">Router 加固 + GPU 验证</span><span class="d"> — 候选白名单、解析容错、bench 报告</span></div>
+    <div class="item reveal"><span class="m">M7</span> <span class="t">深度复盘 + 开源</span><span class="d"> — 流式 in-flight 保护补全、Apache-2.0、README 安全说明</span></div>
+    <div class="item reveal"><span class="m">M8</span> <span class="t">一键打包</span><span class="d"> — install / update / uninstall、systemd 用户服务、CI</span></div>
+    <div class="item reveal"><span class="m">M9</span> <span class="t">Ollama 风格单 CLI</span><span class="d"> — serve/list/show/run REPL/ps/stop/version（0.3.0 破坏性改版）</span></div>
+    <div class="item reveal"><span class="m">M10</span> <span class="t">本地 Agent + Anthropic 网关</span><span class="d"> — <code>nvllm launch</code> 6 种 Agent、<code>POST /v1/messages</code>，Claude Code E2E 验证</span></div>
+    <div class="item reveal"><span class="m">M11</span> <span class="t">虚拟模型 + 视觉/工具 + 自包含发行</span><span class="d"> — <code>create</code>、<code>--image</code>/<code>--tools</code>、prebuilt-venv tarball、bootstrap 一行安装</span></div>
+    <div class="item reveal"><span class="m">M12</span> <span class="t">0.4.0 收尾复盘 + Release</span><span class="d"> — 6 处正确性修复 + 4 处结构统一，143 tests，Release 0.4.0 发布</span></div>
+  </div>
+  <p class="lede" style="margin-top:6px">
+    <b>发行说明：</b>GitHub 单资产上限 2GB，0.4.0 的 ~3.7GB tarball 以两个 <code>&lt;2GB</code> 分卷发布；
+    <code>bootstrap.sh</code> 一行安装命令自动识别并重拼，用户无感。
+    分卷拼接后 sha256：<code>49ef13159fc731e00c5f581a984de5148fb14dabbf333bd75488116a849b099e</code>
+  </p>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="https://github.com/FaberEli/NvLLM">github.com/FaberEli/NvLLM</a>
+      <a href="https://github.com/FaberEli/NvLLM/releases/tag/0.4.0">Release 0.4.0</a>
+      <a href="https://github.com/FaberEli/NvLLM/blob/main/README.md">README</a>
+    </div>
+    NvLLM v0.4.0 · Apache-2.0 · 本页面为单文件（无外部依赖、可离线打开），随仓库版本同步更新。
+    <div style="margin-top:8px">一行安装：<code>curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash</code></div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- 复制按钮 ----
+  window.copyText = function (id, btn) {
+    var txt = document.getElementById(id).innerText;
+    var done = function () {
+      if (!btn) return;
+      var old = btn.textContent;
+      btn.textContent = "已复制";
+      setTimeout(function () { btn.textContent = old; }, 1200);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(txt).then(done, function () { fallback(); });
+    } else { fallback(); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+  };
+  // 终端块复制按钮（复制其后的 <pre> 原文）
+  document.querySelectorAll(".term .copy").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var pre = btn.closest(".term").querySelector("pre");
+      if (!pre) return;
+      var done = function () {
+        var old = btn.textContent; btn.textContent = "已复制";
+        setTimeout(function () { btn.textContent = old; }, 1200);
+      };
+      var txt = pre.innerText;
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(txt).then(done, function () { fallback(); });
+      } else { fallback(); }
+      function fallback() {
+        var ta = document.createElement("textarea");
+        ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+    });
+  });
+
+  // ---- 滚动显现 ----
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
+    }, { threshold: 0.12 });
+    document.querySelectorAll(".reveal").forEach(function (el) { io.observe(el); });
+  } else {
+    document.querySelectorAll(".reveal").forEach(function (el) { el.classList.add("in"); });
+  }
+
+  // ---- 在线实测面板 ----
+  var $ = function (id) { return document.getElementById(id); };
+  var dot = $("livedot"), status = $("livestatus"), body = $("livebody");
+  var base = function () { return ($("liveurl").value || "").replace(/\/+$/, ""); };
+  var models = [];
+
+  function setStatus(kind, text) {
+    dot.className = "statusdot" + (kind === "on" ? " on" : kind === "err" ? " err" : "");
+    status.textContent = text;
+    status.style.color = kind === "on" ? "var(--green)" : kind === "err" ? "var(--rose)" : "var(--dim)";
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  async function api(path, opts) {
+    var r = await fetch(base() + path, opts);
+    if (!r.ok) {
+      var msg;
+      try { var j = await r.json(); msg = (j && (j.error || j.message)) || ""; } catch (e) { msg = ""; }
+      throw new Error("HTTP " + r.status + (msg ? " — " + msg : ""));
+    }
+    return r;
+  }
+
+  $("liveconnect").addEventListener("click", async function () {
+    setStatus("", "连接中…");
+    body.innerHTML = "";
+    try {
+      var ver = await (await api("/api/version")).json();
+      var tags = await (await api("/api/tags")).json();
+      models = tags.models || [];
+      setStatus("on", "已连接 · " + (ver.version || "") + " · " + models.length + " 个模型");
+
+      var rows = models.slice(0, 50).map(function (m) {
+        var caps = m.capabilities || (m.details && m.details.capabilities) || "";
+        if (Array.isArray(caps)) caps = caps.join(", ");
+        return "<tr><td><code>" + esc(m.name) + "</code></td><td>" + esc(caps) + "</td></tr>";
+      }).join("");
+      body.innerHTML =
+        "<div class='models'><table class='tbl'><tr><th>模型</th><th>capabilities</th></tr>" + rows + "</table>" +
+        (models.length > 50 ? "<p class='hint'>…共 " + models.length + " 个，仅显示前 50</p>" : "") +
+        "<div class='chatbox'>" +
+        "<select id='chatmodel'>" + models.map(function (m) { return "<option>" + esc(m.name) + "</option>"; }).join("") + "</select>" +
+        "<input id='chatprompt' placeholder='输入一句话试试…（POST /api/chat, stream:false）'>" +
+        "<button class='btn primary' id='chatsend'>发送</button>" +
+        "</div><div id='chatout'></div></div>";
+
+      $("chatsend").addEventListener("click", sendChat);
+      $("chatprompt").addEventListener("keydown", function (e) { if (e.key === "Enter") sendChat(); });
+    } catch (err) {
+      setStatus("err", "连接失败");
+      body.innerHTML = "<p class='hint'>连接失败：" + esc(err.message) + "<br><br>" +
+        "常见原因：<b>服务未启动</b>——在目标机器运行 <code>nvllm serve</code>（默认 127.0.0.1:8004）；" +
+        "或<b>地址/端口填错</b>。本页面所有请求只发往你填写的 URL。</p>";
+    }
+  });
+
+  async function sendChat() {
+    var out = $("chatout"), prompt = $("chatprompt").value.trim(), model = $("chatmodel").value;
+    if (!prompt) return;
+    out.textContent = "…（首次请求需要加载模型，可能等待 1–3 分钟）";
+    try {
+      var r = await api("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: model, messages: [{ role: "user", content: prompt }], stream: false })
+      });
+      var j = await r.json();
+      var text = (j.message && j.message.content) || JSON.stringify(j);
+      out.textContent = text;
+      out.style.display = "block";
+    } catch (err) {
+      out.textContent = "请求失败：" + err.message;
+      out.style.display = "block";
+    }
+  }
+})();
+</script>
+</body>
+</html>
+
