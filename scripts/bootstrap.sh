@@ -7,11 +7,16 @@
 # ~2-4 GB), extracts it, and runs the bundled installer — no python or pip
 # needed on the target machine.
 #
+# GitHub caps a single release asset at 2 GB, so a release larger than that is
+# uploaded as split parts (…tar.gz.part-00, …part-01, …). This script tries
+# the single-asset URL first (for releases ≤ 2 GB) and transparently falls
+# back to downloading + reassembling the parts.
+#
 # Needs on the target: bash, curl, tar, ~10 GB free disk, aarch64 linux + CUDA GPU.
 #
 # Environment:
 #   NVLLM_VERSION        release version to install (default: 0.4.0)
-#   NVLLM_RELEASE_URL    full tarball URL (overrides NVLLM_VERSION / BASE)
+#   NVLLM_RELEASE_URL    full tarball URL (overrides NVLLM_VERSION / BASE; must be a single file)
 #   NVLLM_RELEASE_BASE   download base (default: GitHub releases of FaberEli/NvLLM)
 #   NVLLM_HOME           install root (default: ~/.nvllm)
 #
@@ -32,8 +37,40 @@ done
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-echo "[nvllm] downloading $URL"
-curl -fL --retry 2 -o "$TMP/nvllm.tar.gz" "$URL"
+if [ -n "${NVLLM_RELEASE_URL:-}" ]; then
+  echo "[nvllm] downloading $URL"
+  curl -fL --retry 2 -o "$TMP/nvllm.tar.gz" "$URL"
+else
+  # 1) single-asset release (<= 2 GB)
+  echo "[nvllm] trying single tarball: $URL"
+  if curl -fL --retry 2 -o "$TMP/nvllm.tar.gz" "$URL" 2>/dev/null; then
+    :
+  else
+    # 2) split release: GitHub caps each asset at 2 GB, so big releases ship as
+    #    …tar.gz.part-00 / …part-01 / … — download them in order and reassemble.
+    echo "[nvllm] single tarball not found — downloading split parts…"
+    n=0
+    while :; do
+      part_url="$(printf '%s.part-%02d' "$URL" "$n")"
+      if curl -fL --retry 2 -o "$TMP/part-$n" "$part_url" 2>/dev/null; then
+        echo "[nvllm]   got part $(printf '%02d' "$n")"
+        n=$((n + 1))
+      else
+        break
+      fi
+    done
+    if [ "$n" -eq 0 ]; then
+      echo "nvllm: release $VERSION not found — tried $URL and its split parts" >&2
+      exit 1
+    fi
+    echo "[nvllm] reassembling $n part(s)…"
+    : > "$TMP/nvllm.tar.gz"
+    for i in $(seq 0 $((n - 1))); do
+      cat "$TMP/part-$i" >> "$TMP/nvllm.tar.gz"
+    done
+  fi
+fi
+
 echo "[nvllm] extracting"
 tar xzf "$TMP/nvllm.tar.gz" -C "$TMP"
 

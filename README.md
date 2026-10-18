@@ -237,10 +237,20 @@ Build the tarball on an aarch64 linux machine (python 3.11-3.13, network,
 scripts/build-release.sh        # → dist/nvllm-0.4.0-linux-aarch64.tar.gz
 ```
 
-then attach it to a GitHub Release (`gh release create 0.4.0 dist/… --title
-"nvllm 0.4.0"` or upload via the web UI). Knobs: `NVLLM_VERSION`,
-`NVLLM_RELEASE_URL`, `NVLLM_HOME`; extra args (e.g. `--with-service`) pass
-through to the installer.
+then attach it to a GitHub Release. **GitHub caps a single release asset at
+2 GB** — a bigger tarball must be split and uploaded as parts, which
+`bootstrap.sh` reassembles transparently:
+
+```bash
+# tarball > 2 GB: split into ≤1.9 GB parts and upload each
+split -b 1900M -d -a 2 nvllm-0.4.0-linux-aarch64.tar.gz nvllm-0.4.0-linux-aarch64.tar.gz.part-
+gh release upload 0.4.0 nvllm-0.4.0-linux-aarch64.tar.gz.part-00 --clobber
+gh release upload 0.4.0 nvllm-0.4.0-linux-aarch64.tar.gz.part-01 --clobber
+# (≤ 2 GB releases: upload the single tarball directly — bootstrap.sh handles both)
+```
+
+Knobs: `NVLLM_VERSION`, `NVLLM_RELEASE_URL`, `NVLLM_HOME`; extra args
+(e.g. `--with-service`) pass through to the installer.
 
 ### Development install
 
