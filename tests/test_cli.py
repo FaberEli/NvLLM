@@ -287,6 +287,19 @@ def test_cli_create_validation_error(nvllm_env, capsys):
     assert "not found" in capsys.readouterr().err
 
 
+def test_show_created_model_shows_wrapper(nvllm_env, capsys):
+    """`nvllm show <virtual>` displays the injected system prompt + options."""
+    assert cli.main(["create", "assistant", "--from", "acme/TinyLM", "--system", "be brief", "--temperature", "0.3"]) == 0
+    capsys.readouterr()
+    assert cli.main(["show", "assistant"]) == 0
+    out = capsys.readouterr().out
+    assert "system prompt:" in out
+    assert "be brief" in out
+    assert "temperature = 0.3" in out
+    capsys.readouterr()
+    cli.main(["rm", "assistant"])
+
+
 # ---- vision + tools (run + REPL) --------------------------------------------------
 
 

@@ -113,6 +113,16 @@ def test_response_stop_reasons_and_tool_use_blocks():
     assert m2["content"][0]["input"] == {"a": 1}
 
 
+def test_error_type_mapping():
+    """Common HTTP codes map to Anthropic's documented error types; the rest
+    fall back to api_error."""
+    assert A.error_response(400, "x")[1]["error"]["type"] == "invalid_request_error"
+    assert A.error_response(404, "x")[1]["error"]["type"] == "not_found_error"
+    assert A.error_response(429, "x")[1]["error"]["type"] == "rate_limit_error"
+    assert A.error_response(502, "x")[1]["error"]["type"] == "api_error"
+    assert A.error_response(404, "x")[0] == 404  # status passes through
+
+
 def test_stream_state_machine():
     acc = A.AnthropicStream("m1")
     evs = acc.start() + acc.apply({"choices": [{"delta": {"content": "Hel"}}]}) + acc.apply({"choices": [{"delta": {"content": "lo"}}]}) + acc.close()

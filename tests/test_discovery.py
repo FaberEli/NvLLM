@@ -46,6 +46,44 @@ def test_symlinked_weights_report_blob_size(fake_hub):
     assert m.size == 5_000_000
 
 
+def test_pooling_chat_model_keeps_embedding_capability(fake_hub):
+    """A chat decoder that also ships `pooling` (an embedding endpoint) keeps
+    BOTH capabilities — pins the explicit-precedence embedding heuristic."""
+    sha = "c" * 40
+    mdir = fake_hub / "models--acme--Hybrid"
+    (mdir / "refs").mkdir(parents=True)
+    (mdir / "refs" / "main").write_text(sha)
+    snap = mdir / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text(
+        '{"architectures": ["HybridForCausalLM"], "model_type": "hybrid", "pooling": "last", '
+        '"hidden_size": 64, "num_hidden_layers": 1, "vocab_size": 16}'
+    )
+    (snap / "model.safetensors").write_bytes(b"\0" * 512)
+    m = next(x for x in discover(fake_hub) if x.repo == "acme/Hybrid")
+    assert Capability.COMPLETION in m.capabilities
+    assert Capability.EMBEDDING in m.capabilities
+
+
+def test_embed_substring_not_trusted_for_chat_decoders(fake_hub):
+    """The loose 'embed' substring heuristic must not fire on a ForCausalLM
+    chat decoder (the guard binds to that branch alone)."""
+    sha = "d" * 40
+    mdir = fake_hub / "models--acme--EmbedLite"
+    (mdir / "refs").mkdir(parents=True)
+    (mdir / "refs" / "main").write_text(sha)
+    snap = mdir / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text(
+        '{"architectures": ["EmbedLiteForCausalLM"], "model_type": "embd", '
+        '"hidden_size": 64, "num_hidden_layers": 1, "vocab_size": 16}'
+    )
+    (snap / "model.safetensors").write_bytes(b"\0" * 512)
+    m = next(x for x in discover(fake_hub) if x.repo == "acme/EmbedLite")
+    assert Capability.COMPLETION in m.capabilities
+    assert Capability.EMBEDDING not in m.capabilities
+
+
 def test_unsupported_model_flagged(fake_hub):
     catalog = _catalog(fake_hub)
     wan = next(m for m in catalog if m.repo == "acme/WanVideo")

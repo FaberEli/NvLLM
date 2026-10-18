@@ -250,7 +250,7 @@ Work from the repo with an editable venv instead:
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pip install "vllm==0.31.0"          # the engine (validated baseline)
-python -m pytest -q                 # 135 tests, no GPU needed
+python -m pytest -q                 # 143 tests, no GPU needed
 ```
 
 ## Quickstart
@@ -382,7 +382,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-The suite (135 tests) uses a fake HF hub cache and a stub OpenAI-compatible
+The suite (143 tests) uses a fake HF hub cache and a stub OpenAI-compatible
 worker, so it runs without a GPU or a real vLLM install — it also runs in CI.
 
 ## Licensing

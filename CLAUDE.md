@@ -5,7 +5,7 @@ user-facing doc; this file is for working on the code.
 
 ## Running
 
-- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (135 tests)
+- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (143 tests)
 - Dev server (default bind `0.0.0.0:8004`): `nvllm serve` or
   `.venv/bin/python -m nvllm_service serve --hf-hub-root <cache>`
 - **Single entry (0.3.0, breaking):** `nvllm` (= `nvllm_service.cli:main`) and
@@ -41,6 +41,8 @@ user-facing doc; this file is for working on the code.
   regressed once. Same pattern again: `state_root` (field) + `state_dir()`
   (method; env `NVLLM_STATE_DIR`, default `~/.local/share/nvllm-serve`) — the
   field *cannot* share the method's name, so it is deliberately `state_root`.
+  Every env-backed knob is parsed in its `default_factory` — `from_env()` is a
+  documented alias for `cls()`, so there is no second place to wire a new env var.
 - `created.py` — `CreatedModel` (name/base/system/options/created_at) +
   `CreatedStore`: the virtual-model store (`created.json`, atomic tmp+rename
   write; `list/get/names/create/delete`). Pure stdlib, independently testable.
@@ -78,7 +80,11 @@ user-facing doc; this file is for working on the code.
   `POST /api/create` / `POST /api/rm` manage the store (rm only for created
   models; anything else 404 — the CLI turns that into HF-cache-delete guidance).
   `/api/tags` + `/v1/models` + `/api/show` list created models
-  (`details.parent_model` = base).
+  (`details.parent_model` = base). Spec injection is shared (`_apply_system_to_messages`
+  + `_apply_sampling` under the three `_inject_*_spec()`); `/api/unload` on a
+  created name resolves to its base (virtuals share the base's worker);
+  `/v1/messages` enforces the COMPLETION capability like `/api/chat`; a created
+  model whose base left the cache is an actionable 404.
 - `forward.py` — Ollama↔OpenAI translation + streaming (OpenAI SSE in, Ollama
   NDJSON out). Keep it worker-agnostic: it only needs a `Worker` exposing
   `base_url`, `name`, and `inflight` (streaming forwards hold `inflight` for the

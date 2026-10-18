@@ -145,6 +145,17 @@ def test_created_models_share_one_worker(client):
     assert loaded == ["acme/TinyLM:main"]  # one base worker serves both virtuals
 
 
+def test_chat_created_model_with_missing_base_404(client):
+    """A virtual model whose base left the cache gives an actionable 404,
+    not a bare 'model not found' for the base name."""
+    from nvllm_service.created import CreatedModel
+
+    client.app.state.created.create(CreatedModel(name="orphan", base="gone/Ghost:main"))
+    r = client.post("/api/chat", json={"model": "orphan", "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 404
+    assert "no longer in the HuggingFace cache" in r.json()["error"]
+
+
 def test_api_rm_only_created(client):
     _create(client)
     r = client.post("/api/rm", json={"name": "assistant"})

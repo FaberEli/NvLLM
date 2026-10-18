@@ -111,13 +111,17 @@ def _detect_capabilities(cfg: dict, snapshot: Path) -> set[Capability]:
     if any(a.endswith("ForCausalLM") or a.endswith("ForConditionalGeneration") for a in archs):
         caps.add(Capability.COMPLETION)
 
-    # pooling / embedding model?
+    # pooling / embedding model? An explicit `pooling` key, a non-causal
+    # decoder, or a known embedding family means the model serves embeddings.
+    # The loose "embed" substring heuristic is only trusted for models that are
+    # NOT chat decoders (ForCausalLM) — the guard applies to that branch alone.
+    # (Explicit parentheses: `and` binds tighter than `or`, so without them the
+    # guard would silently cover only the last disjunct — which is the intent.)
     if (
         cfg.get("pooling")
         or cfg.get("is_causal") is False
         or mtype in _EMBED_HINT_TYPES
-        or ("embed" in mtype or "embed" in any_arch)
-        and not any(a.endswith("ForCausalLM") for a in archs)
+        or (("embed" in mtype or "embed" in any_arch) and not any(a.endswith("ForCausalLM") for a in archs))
     ):
         caps.add(Capability.EMBEDDING)
 

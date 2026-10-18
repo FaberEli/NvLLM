@@ -217,6 +217,19 @@ def test_api_unload_not_loaded(client):
     assert "not loaded" in r.json()["error"]
 
 
+def test_api_unload_virtual_name_unloads_base(client):
+    """`nvllm stop <created>` resolves to the base worker (virtuals share it)."""
+    assert client.post("/api/create", json={"name": "assistant", "model": "acme/TinyLM"}).status_code == 200
+    r = client.post("/api/chat", json={"model": "assistant", "messages": [{"role": "user", "content": "hi"}], "stream": False})
+    assert r.status_code == 200
+    names = [m["name"] for m in client.get("/api/ps").json()["models"]]
+    assert "acme/TinyLM:main" in names
+    r = client.post("/api/unload", json={"model": "assistant"})
+    assert r.status_code == 200
+    assert r.json()["model"] == "acme/TinyLM:main"
+    assert client.get("/api/ps").json()["models"] == []
+
+
 def test_api_unload_unknown_model(client):
     r = client.post("/api/unload", json={"model": "nope/Nope"})
     assert r.status_code == 404
@@ -274,6 +287,19 @@ def test_v1_messages_unknown_model_anthropic_error_shape(client):
     body = r.json()
     assert body["type"] == "error"
     assert "not found" in body["error"]["message"]
+
+
+def test_v1_messages_embedding_model_rejected(client):
+    """Same capability guard as /api/chat: an embedding model cannot serve chat."""
+    r = client.post(
+        "/v1/messages",
+        json={"model": "acme/Embedder", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 400
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "invalid_request_error"
+    assert "completion" in body["error"]["message"]
 
 
 # ---- model aliases (Claude Code 客户端模型名校验的解法) ----------------------

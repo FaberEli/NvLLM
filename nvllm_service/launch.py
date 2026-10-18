@@ -44,12 +44,7 @@ class Agent:
     install_hint: str = ""
 
     def env_for(self, base_url: str, model: str) -> dict[str, str]:
-        out = {}
-        for k, v in self.env.items():
-            if v is None:
-                continue
-            out[k] = v.replace("<base>", base_url).replace("<model>", model)
-        return out
+        return {k: v.replace("<base>", base_url).replace("<model>", model) for k, v in self.env.items()}
 
     def args_for(self, model: str) -> list[str]:
         return [a.replace("<model>", model) for a in self.args]

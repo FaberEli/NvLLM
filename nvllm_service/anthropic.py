@@ -234,10 +234,13 @@ class AnthropicStream:
         for ev in acc.start():      yield ev
         for evt in openai_chunks:   # async iterator of parsed OpenAI chunks
             for ev in acc.apply(evt): yield ev
-        for ev in acc.finish():     yield ev
+        for ev in acc.close():      yield ev
 
     Text deltas stream live (index 0); tool-call fragments are buffered and
     emitted as trailing ``tool_use`` blocks before ``message_delta``.
+    Note: ``finish`` (the OpenAI finish_reason) is an *attribute*; the tail-
+    event method is ``close()`` — do not rename one onto the other (an instance
+    attribute would shadow the method).
     """
 
     def __init__(self, model: str) -> None:
@@ -320,8 +323,21 @@ class AnthropicStream:
         return out
 
 
+# Anthropic's documented error types per HTTP status (clients such as Claude
+# Code branch on `error.type`, so map the common codes precisely).
+_ERROR_TYPES = {
+    400: "invalid_request_error",
+    401: "authentication_error",
+    403: "permission_error",
+    404: "not_found_error",
+    408: "timeout_error",
+    413: "request_too_large_error",
+    429: "rate_limit_error",
+}
+
+
 def error_response(status_code: int, message: str) -> tuple[int, dict]:
     return status_code, {
         "type": "error",
-        "error": {"type": "api_error", "message": message},
+        "error": {"type": _ERROR_TYPES.get(status_code, "api_error"), "message": message},
     }

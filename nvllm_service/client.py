@@ -160,6 +160,15 @@ def cmd_show(url: str, model: str) -> int:
         for k, v in model_info.items():
             if v not in (None, "", 0):
                 print(f"  {k:<{width}}{v}")
+    # created (virtual) models: show the wrapper the server injects per request
+    if body.get("system"):
+        print("\n  system prompt:")
+        for ln in str(body["system"]).splitlines():
+            print(f"    {ln}")
+    if body.get("options"):
+        print("\n  options:")
+        for k, v in body["options"].items():
+            print(f"    {k} = {v}")
     print(f"\n  run: nvllm run {model}")
     return 0
 

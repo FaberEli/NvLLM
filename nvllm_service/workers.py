@@ -317,7 +317,8 @@ class WorkerManager:
                 except httpx.HTTPError:
                     pass
                 await asyncio.sleep(1.5)
-        raise TimeoutError(f"worker {worker.name} not ready within {deadline:.0f}s; see {worker.log_path}")
+        timeout_s = timeout or s.load_timeout
+        raise TimeoutError(f"worker {worker.name} not ready within {timeout_s:.0f}s; see {worker.log_path}")
 
     async def unload(self, name: str) -> bool:
         """Terminate a worker and drop it from the registry."""

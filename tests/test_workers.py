@@ -267,6 +267,20 @@ def test_spawn_failure_raises_and_cleans(manager, failing_vllm, fake_hub):
     run_scenario(manager, scenario)
 
 
+def test_wait_ready_timeout_message_uses_duration(manager, fake_hub):
+    """The timeout error must report the *timeout*, not the epoch deadline."""
+    from nvllm_service.workers import STATE_LOADING, Worker
+
+    info, _ = _two_models(fake_hub)
+
+    async def scenario():
+        w = Worker(info=info, port=1, state=STATE_LOADING)  # port 1: nothing listens
+        with pytest.raises(TimeoutError, match=r"not ready within 1s"):
+            await manager._wait_ready(w, timeout=1)
+
+    run_scenario(manager, scenario)
+
+
 # ---- M5: multi-model concurrency + keep-alive reaping -------------------------
 
 

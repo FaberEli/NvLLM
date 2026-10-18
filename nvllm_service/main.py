@@ -156,46 +156,65 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         requested = str(body.get("model") or body.get("name") or "")
         cm = _created(requested)
         if cm is not None:
+            base = by_name(catalog, cm.base)
+            if base is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"created model '{requested}' points at base '{cm.base}', which is no longer in the HuggingFace cache",
+                )
             body["model"] = cm.base  # catalog resolution happens against the base
         info = await _resolve_model(body)
         return info, requested, cm
+
+    # ---- created-model (virtual) spec injection, shared across protocols ----
+    def _apply_system_to_messages(msgs: list, system: str) -> None:
+        """Merge a virtual model's system prompt into an Ollama/OpenAI-style
+        message list: append to an existing system message, or prepend one."""
+        for m in msgs:
+            if isinstance(m, dict) and m.get("role") == "system":
+                c = m.get("content")
+                m["content"] = f"{c}\n\n{system}" if isinstance(c, str) and c else system
+                return
+        msgs.insert(0, {"role": "system", "content": system})
+
+    def _apply_sampling(body: dict, options: dict) -> None:
+        """Merge sampling options (explicit request params win; num_predict -> max_tokens)."""
+        for k in ("temperature", "top_p"):
+            if k in options and k not in body:
+                body[k] = options[k]
+        if "num_predict" in options and "max_tokens" not in body:
+            body["max_tokens"] = int(options["num_predict"])
 
     def _inject_ollama_spec(body: dict, cm: CreatedModel | None) -> None:
         """Ollama bodies: system prompt as a message, options merged (request wins)."""
         if cm is None:
             return
-        if cm.system:
-            msgs = body.get("messages")
-            if isinstance(msgs, list):
-                for m in msgs:
-                    if isinstance(m, dict) and m.get("role") == "system":
-                        c = m.get("content")
-                        m["content"] = f"{c}\n\n{cm.system}" if isinstance(c, str) and c else cm.system
-                        break
-                else:
-                    msgs.insert(0, {"role": "system", "content": cm.system})
+        if cm.system and isinstance(body.get("messages"), list):
+            _apply_system_to_messages(body["messages"], cm.system)
         if cm.options:
             body["options"] = {**cm.options, **(body.get("options") or {})}
 
     def _inject_openai_spec(body: dict, cm: CreatedModel | None) -> None:
-        """OpenAI-style bodies: system message + top-level params (num_predict->max_tokens)."""
+        """OpenAI-style bodies: system message + top-level params (request wins)."""
+        if cm is None:
+            return
+        if cm.system and isinstance(body.get("messages"), list):
+            _apply_system_to_messages(body["messages"], cm.system)
+        if cm.options:
+            _apply_sampling(body, cm.options)
+
+    def _inject_anthropic_spec(body: dict, cm: CreatedModel | None) -> None:
+        """Anthropic bodies: system prompt into the `system` field; params top-level."""
         if cm is None:
             return
         if cm.system:
-            msgs = body.get("messages")
-            if isinstance(msgs, list):
-                for m in msgs:
-                    if isinstance(m, dict) and m.get("role") == "system":
-                        c = m.get("content")
-                        m["content"] = f"{c}\n\n{cm.system}" if isinstance(c, str) and c else cm.system
-                        break
-                else:
-                    msgs.insert(0, {"role": "system", "content": cm.system})
-        for k in ("temperature", "top_p"):
-            if k in cm.options and k not in body:
-                body[k] = cm.options[k]
-        if "num_predict" in cm.options and "max_tokens" not in body:
-            body["max_tokens"] = int(cm.options["num_predict"])
+            existing = body.get("system")
+            if isinstance(existing, str) and existing:
+                body["system"] = f"{existing}\n\n{cm.system}"
+            elif not existing:
+                body["system"] = cm.system
+        if cm.options:
+            _apply_sampling(body, cm.options)
 
     # ---- misc ---------------------------------------------------------
     @app.get("/", include_in_schema=False)
@@ -257,11 +276,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/unload")
     async def api_unload(request: Request) -> dict[str, Any]:
-        """Unload a loaded model (the `nvllm stop` counterpart of Ollama's stop)."""
+        """Unload a loaded model (the `nvllm stop` counterpart of Ollama's stop).
+
+        A created (virtual) name resolves to its base: the virtual model has no
+        worker of its own — it shares the base's, so stopping it stops the base.
+        """
         body = await _json_body(request)
         name = str(body.get("model") or body.get("name") or "")
         if not name:
             raise HTTPException(status_code=400, detail='"model" is required')
+        cm = _created(name)
+        if cm is not None:
+            name = cm.base
         info = by_name(catalog, name)
         if info is None:
             raise HTTPException(status_code=404, detail=f"model '{name}' not found")
@@ -480,27 +506,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def v1_aliases_list() -> dict[str, Any]:
         return {"aliases": dict(app.state.model_aliases)}
 
-    def _inject_anthropic_spec(body: dict, cm: CreatedModel | None) -> None:
-        """Anthropic bodies: system prompt into the `system` field; params top-level."""
-        if cm is None:
-            return
-        if cm.system:
-            existing = body.get("system")
-            if isinstance(existing, str) and existing:
-                body["system"] = f"{existing}\n\n{cm.system}"
-            elif not existing:
-                body["system"] = cm.system
-        for k in ("temperature", "top_p"):
-            if k in cm.options and k not in body:
-                body[k] = cm.options[k]
-        if "num_predict" in cm.options and "max_tokens" not in body:
-            body["max_tokens"] = int(cm.options["num_predict"])
-
     @app.post("/v1/messages")
     async def v1_messages(request: Request):
         body = await _json_body(request)
         try:
             info, requested, spec = await _resolve_with_spec(body)  # aliases + 'auto' + created
+            require(info, Capability.COMPLETION)  # same guard as /api/chat
             _inject_anthropic_spec(body, spec)
             shown = requested if spec else info.name
             worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))

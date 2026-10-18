@@ -1,7 +1,13 @@
-"""Service configuration: CLI flags > environment variables > defaults."""
+"""Service configuration: CLI flags > environment variables > defaults.
+
+Every env-backed knob reads its environment variable in its ``default_factory``,
+so constructing ``Settings()`` (or the ``Settings.from_env()`` alias) is all
+that is needed — there is no second place to wire a new env var.
+"""
 from __future__ import annotations
 
 import os
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -77,21 +83,32 @@ class Settings:
     worker_trust_remote_code: bool = field(
         default_factory=lambda: os.environ.get("NVLLM_TRUST_REMOTE_CODE", "0") == "1"
     )
-    # extra raw CLI args appended to every `vllm serve` invocation, e.g. NVLLM_WORKER_EXTRA_ARGS="--enable-auto-tool-choice --tool-call-parser hermes"
-    worker_extra_args: list[str] = field(default_factory=list)
+    # extra raw CLI args appended to every `vllm serve` invocation (shlex-split),
+    # e.g. NVLLM_WORKER_EXTRA_ARGS="--enable-auto-tool-choice --tool-call-parser hermes"
+    worker_extra_args: list[str] = field(
+        default_factory=lambda: shlex.split(os.environ.get("NVLLM_WORKER_EXTRA_ARGS", ""))
+    )
 
     # --- routing (Router) ---
     router_judge: str | None = field(default_factory=lambda: _env_str("NVLLM_ROUTER_JUDGE"))
     # Optional whitelist of candidate repos ("org/name") the Router may route to;
     # empty = all supported models. Keeps routing to models that actually fit in memory.
-    router_candidates: list[str] = field(default_factory=list)
+    router_candidates: list[str] = field(
+        default_factory=lambda: [c.strip() for c in os.environ.get("NVLLM_ROUTER_CANDIDATES", "").split(",") if c.strip()]
+    )
 
     # --- misc ---
-    log_dir: Path | None = field(default=None)  # worker log dir; $NVLLM_LOG_DIR (set by install/systemd); None -> ~/.local/share/nvllm-serve/logs
+    # worker log dir; $NVLLM_LOG_DIR (set by install/systemd); None -> ~/.local/share/nvllm-serve/logs
+    log_dir: Path | None = field(
+        default_factory=lambda: (lambda v: Path(v).expanduser() if v else None)(os.environ.get("NVLLM_LOG_DIR"))
+    )
     # ⚠️ field `state_root` (Path|None) vs METHOD `state_dir()` — different names on
     # purpose (same pattern as hf_hub_root / hub_root): a field and a method can
     # never share a name on this dataclass.
-    state_root: Path | None = field(default=None)  # $NVLLM_STATE_DIR (set by install/systemd); None -> ~/.local/share/nvllm-serve
+    # $NVLLM_STATE_DIR (set by install/systemd); None -> ~/.local/share/nvllm-serve
+    state_root: Path | None = field(
+        default_factory=lambda: (lambda v: Path(v).expanduser() if v else None)(os.environ.get("NVLLM_STATE_DIR"))
+    )
     version: str = field(default_factory=lambda: _env_str("NVLLM_VERSION") or _PKG_VERSION)
 
     def hub_root(self) -> Path:
@@ -109,19 +126,6 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        s = cls()
-        extra = os.environ.get("NVLLM_WORKER_EXTRA_ARGS", "")
-        if extra:
-            import shlex
-
-            s.worker_extra_args = shlex.split(extra)
-        cands = os.environ.get("NVLLM_ROUTER_CANDIDATES", "")
-        if cands:
-            s.router_candidates = [c.strip() for c in cands.split(",") if c.strip()]
-        log_dir = os.environ.get("NVLLM_LOG_DIR", "")
-        if log_dir:
-            s.log_dir = Path(log_dir).expanduser()
-        state_dir = os.environ.get("NVLLM_STATE_DIR", "")
-        if state_dir:
-            s.state_root = Path(state_dir).expanduser()
-        return s
+        """Env-backed settings. Every env knob is read in its default_factory,
+        so this is exactly ``cls()`` — kept as the documented entry point."""
+        return cls()

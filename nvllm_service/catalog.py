@@ -101,8 +101,8 @@ class ModelInfo:
                 "general.architecture": (self.architectures[0] if self.architectures else ""),
                 "general.parameter_count": self.parameter_count,
                 "general.size": f"{_fmt_param_size(self.parameter_count)} {self.quantization or ''}".strip(),
-                f"{self.model_type}.context_length": self.context_length,
-                f"{self.model_type}.embedding_length": self.embedding_length or 0,
+                f"{self.model_type or 'model'}.context_length": self.context_length,
+                f"{self.model_type or 'model'}.embedding_length": self.embedding_length or 0,
             },
             "modified_at": (self.modified_at or datetime.now(timezone.utc)).isoformat(),
         }
