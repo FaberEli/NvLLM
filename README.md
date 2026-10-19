@@ -22,9 +22,10 @@ isolated and the supervisor can reap and respawn.
 
 > **Interactive demo report:** [`index.html`](index.html) — a single-file,
 > dependency-free walkthrough of the features and usage, with a live
-> connect-and-chat panel. Open it on a machine where `nvllm serve` is running
-> and the panel becomes a working client (the service sends permissive CORS
-> headers for browser clients).
+> connect-and-chat panel. Live at <https://FaberEli.github.io/NvLLM/>
+> (GitHub Pages). For the live panel, open it on a machine where
+> `nvllm serve` is running and the panel becomes a working client (the service
+> sends permissive CORS headers for browser clients).
 
 ## Ollama-style CLI (`nvllm`)
 

@@ -588,6 +588,7 @@ meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5
   <p class="lede">这个页面可以直接连到你本机的 NvLLM 服务（服务端已开启 CORS）。在一台运行着 <code>nvllm serve</code> 的机器上打开本页面，下面的面板就是活的。</p>
 
   <div class="live">
+    <div id="envnote" class="hint" style="margin:0 0 12px"></div>
     <div class="controls">
       <span class="statusdot" id="livedot"></span>
       <span id="livestatus" style="font-size:13px;color:var(--dim)">未连接</span>
@@ -597,7 +598,9 @@ meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5
     <div id="livebody">
       <p class="hint">连接后这里会列出该服务的 <b>模型池</b>（GET /api/tags）与 <b>版本</b>（GET /api/version），并可以直接发起一次对话（POST /api/chat）。</p>
     </div>
-    <p class="note">提示：流式输出、工具调用、Anthropic 网关请用任意支持 SSE 的客户端体验（见上方 curl 示例）；本面板只做最小连通性演示。所有请求只发往你填写的 URL，不经过任何第三方。</p>
+    <p class="note">提示：流式输出、工具调用、Anthropic 网关请用任意支持 SSE 的客户端体验（见上方 curl 示例）；本面板只做最小连通性演示。所有请求只发往你填写的 URL，不经过任何第三方。<br>
+    本页线上版是 HTTPS——若填写<b>另一台机器</b>的 HTTP 服务地址，浏览器可能以混合内容为由拦截；
+    此时直接<b>在那台机器上打开本 <code>index.html</code>（双击，file:// 协议）</b>，功能完全一样。</p>
   </div>
 </section>
 
@@ -651,6 +654,7 @@ meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5
 <footer>
   <div class="wrap">
     <div class="links">
+      <a href="https://FaberEli.github.io/NvLLM/">演示报告线上版</a>
       <a href="https://github.com/FaberEli/NvLLM">github.com/FaberEli/NvLLM</a>
       <a href="https://github.com/FaberEli/NvLLM/releases/tag/0.4.0">Release 0.4.0</a>
       <a href="https://github.com/FaberEli/NvLLM/blob/main/README.md">README</a>
@@ -663,6 +667,20 @@ meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5
 <script>
 (function () {
   "use strict";
+
+  // ---- 环境提示（线上 = GitHub Pages / 本地文件）----
+  var env = document.getElementById("envnote");
+  if (env) {
+    var host = location.hostname || "";
+    if (host.indexOf("github.io") !== -1) {
+      env.innerHTML = "🌐 你正在浏览<b>线上版</b>（GitHub Pages）。在线实测面板建议在运行 " +
+        "<code>nvllm serve</code> 的机器上打开本页面（该机的本地 <code>index.html</code>），" +
+        "或填写一台从本机可达的服务地址。";
+    } else {
+      env.innerHTML = "💻 你正在浏览<b>本地版</b>。在线实测面板可直接连本机的 " +
+        "NvLLM 服务（默认 <code>http://127.0.0.1:8004</code>）。";
+    }
+  }
 
   // ---- 复制按钮 ----
   window.copyText = function (id, btn) {
