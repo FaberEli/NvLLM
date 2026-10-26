@@ -259,11 +259,14 @@ def test_launch_list_via_cli(capsys):
 
 
 def test_version(nvllm_env, capsys):
+    import nvllm_service
+
     rc = cli.main(["version"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "nvllm 0.4.0" in out
-    assert "server  nvllm-serve 0.4.0" in out
+    # assert against the real version so this does not break on every bump
+    assert f"nvllm {nvllm_service.__version__}" in out
+    assert f"server  nvllm-serve {nvllm_service.__version__}" in out
 
 
 # ---- create / rm (virtual models) -----------------------------------------------

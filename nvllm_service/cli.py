@@ -51,8 +51,10 @@ def run_server(argv: list[str] | None = None, prog: str = "nvllm serve") -> int:
     p.add_argument("--max-models", type=int, default=None, help="max non-judge models resident at once (default $NVLLM_MAX_MODELS or 1)")
     p.add_argument("--max-model-len", type=int, default=None, help="pass --max-model-len to workers")
     p.add_argument("--gpu-memory-utilization", type=float, default=None, help="pass to workers")
-    p.add_argument("--router-judge", default=None, help="model name to act as the Router judge")
+    p.add_argument("--router-judge", default=None, help="model name to act as the Router judge (a decision model, or any LLM)")
     p.add_argument("--router-candidates", default=None, help="comma-separated repos to restrict routing candidates (default: all supported)")
+    p.add_argument("--router-backend", default=None, help="router judge backend: vllm (default, serve+logprob scoring) or transformers (in-process)")
+    p.add_argument("--router-top-logprobs", type=int, default=None, help="top-k logprobs to request from the judge for option scoring (default 32)")
     p.add_argument("--log-level", default="info", help="log level")
     args = p.parse_args(argv)
 
@@ -81,6 +83,10 @@ def run_server(argv: list[str] | None = None, prog: str = "nvllm serve") -> int:
         s.router_judge = args.router_judge
     if args.router_candidates:
         s.router_candidates = [c.strip() for c in args.router_candidates.split(",") if c.strip()]
+    if args.router_backend:
+        s.router_backend = args.router_backend
+    if args.router_top_logprobs is not None:
+        s.router_top_logprobs = max(1, args.router_top_logprobs)
 
     _preflight_vllm()
     app = create_app(s)
@@ -128,6 +134,7 @@ Usage:
   nvllm run MODEL [PROMPT]    chat with a model — one-shot, or an interactive REPL
   nvllm create NAME --from MODEL [--system "..."]   virtual model over a cache model
   nvllm rm NAME               delete a created (virtual) model (cache models are never deleted)
+  nvllm route TEXT            preview which model 'auto' would route to (dry-run; runs only the judge)
   nvllm launch [AGENT] [EXTRA]  start an agent CLI (claude/codex/…) on the local service
   nvllm ps                    show loaded (resident) models
   nvllm stop MODEL            unload a model
@@ -145,8 +152,12 @@ Launching agents: `nvllm launch claude -p "hello"` runs Claude Code against the
 local models (Anthropic API served at /v1/messages); codex/qwen/gemini/opencode/
 aider go through the OpenAI API at /v1. See `nvllm launch --list`.
 
-Routing: with a judge configured (`nvllm serve --router-judge <model>`), any
-request can use model "auto" and the server picks the best model for it.
+Routing: with a judge configured (`nvllm serve --router-judge <decision-model>`),
+any request can use model "auto" and the server picks the best model for it.
+The judge is a resident decision model; by default it is served via vLLM and its
+choice is read from the logprob distribution over the candidates (a faster,
+in-process HuggingFace readout is available via --router-backend transformers).
+Preview a decision without consuming a backend model: `nvllm route "your text"`.
 
 Environment: NVLLM_SERVER — server URL (default {client.DEFAULT_URL})
 """
@@ -194,6 +205,10 @@ def _build_parser() -> argparse.ArgumentParser:
     rm = sub.add_parser("rm", help="delete a created (virtual) model — cache models are never deleted")
     rm.add_argument("name")
     rm.add_argument("--server", default=None, help="server URL (default $NVLLM_SERVER or http://127.0.0.1:8004)")
+
+    rt = sub.add_parser("route", help="preview which model 'auto' would route to for a text (dry-run; runs only the judge)")
+    rt.add_argument("text", help="the request text to route")
+    rt.add_argument("--server", default=None, help="server URL (default $NVLLM_SERVER or http://127.0.0.1:8004)")
 
     la = sub.add_parser("launch", help="launch an agent CLI (claude/codex/…) wired to the nvllm server")
     la.add_argument("--model", "-m", default=None, help="model to use (default: largest completion-capable model, or $NVLLM_LAUNCH_MODEL)")
@@ -266,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
             return client.cmd_create(url, args.name, args.base, args.system, options)
         if args.command == "rm":
             return client.cmd_rm(url, args.name)
+        if args.command == "route":
+            return client.cmd_route(url, args.text)
         if args.command == "launch":
             extra = list(args.extra or [])
             if extra and extra[0] == "--":  # argparse's REMAINDER separator

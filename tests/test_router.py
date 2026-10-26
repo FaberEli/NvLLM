@@ -21,7 +21,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
 from nvllm_service.catalog import Capability, ModelInfo
-from nvllm_service.router import ROUTE_ALIAS, Router
+from nvllm_service.router import ROUTE_ALIAS, Router, option_symbol, softmax_topk
 
 # ---- pure Router unit tests --------------------------------------------------
 
@@ -270,3 +270,305 @@ def test_router_candidates_whitelist(tmp_path: Path):
     assert "acme/BigLM:main" in names
     assert "acme/Embedder:main" not in names  # excluded by the whitelist
     assert "acme/JudgeLM:main" not in names  # judge is never a target
+
+
+# ---- M13: option-symbol scoring (decision-model native readout) -------------
+
+
+def test_option_symbol_sequence():
+    assert [option_symbol(i) for i in range(3)] == ["A", "B", "C"]
+    assert option_symbol(25) == "Z"
+    assert option_symbol(26) == "a"
+    assert option_symbol(51) == "z"
+    assert option_symbol(52) == "0"
+
+
+def test_softmax_topk_picks_argmax_and_normalizes():
+    # the shared scoring core: softmax over a subset of log-scale values
+    best, probs = softmax_topk([(0, -2.0), (1, -1.0), (2, -5.0)])
+    assert best == 1  # least-negative (highest) value wins
+    assert len(probs) == 3
+    assert abs(sum(probs) - 1.0) < 1e-9
+    assert probs[1] > probs[0] > probs[2]
+
+
+def test_softmax_topk_is_shift_invariant():
+    # adding a constant to every value must not change the distribution
+    b1, p1 = softmax_topk([(0, -100.0), (1, -99.0), (2, -200.0)])
+    b2, p2 = softmax_topk([(0, 0.0), (1, 1.0), (2, -100.0)])
+    assert b1 == b2 == 1
+    assert all(abs(x - y) < 1e-9 for x, y in zip(p1, p2))
+
+
+def test_softmax_topk_single_option_is_one():
+    best, probs = softmax_topk([(5, -3.0)])
+    assert best == 5
+    assert probs == [1.0]
+
+
+def test_score_logprobs_picks_argmax_and_normalizes():
+    judge = _mi("acme/Judge", {Capability.COMPLETION})
+    a = _mi("acme/A", {Capability.COMPLETION})
+    b = _mi("acme/B", {Capability.COMPLETION})
+    c = _mi("acme/C", {Capability.COMPLETION})
+    r = Router(judge=judge, candidates=[judge, a, b, c])
+    # b has the highest logprob -> chosen; distribution renormalizes over the options
+    top = [
+        {"token": "B", "logprob": -0.1},
+        {"token": "A", "logprob": -1.5},
+        {"token": "C", "logprob": -2.5},
+    ]
+    chosen, dist = r.score_logprobs(top)
+    assert chosen is b
+    assert set(dist) == {a.name, b.name, c.name}
+    assert abs(sum(dist.values()) - 1.0) < 1e-6
+    assert dist[b.name] > dist[a.name] > dist[c.name]
+
+
+def test_score_logprobs_ignores_non_option_tokens():
+    judge = _mi("acme/Judge", {Capability.COMPLETION})
+    a = _mi("acme/A", {Capability.COMPLETION})
+    b = _mi("acme/B", {Capability.COMPLETION})
+    r = Router(judge=judge, candidates=[judge, a, b])
+    # "the", "best", "X" (not a candidate option) must be ignored
+    top = [
+        {"token": "the", "logprob": -0.01},
+        {"token": "B", "logprob": -0.4},
+        {"token": "A", "logprob": -3.0},
+        {"token": "X", "logprob": -0.2},
+    ]
+    chosen, dist = r.score_logprobs(top)
+    assert chosen is b
+    assert set(dist) == {a.name, b.name}
+
+
+def test_score_logprobs_no_option_letter_returns_none():
+    judge = _mi("acme/Judge", {Capability.COMPLETION})
+    a = _mi("acme/A", {Capability.COMPLETION})
+    r = Router(judge=judge, candidates=[judge, a])
+    chosen, dist = r.score_logprobs([{"token": "sure", "logprob": -0.1}, {"token": "thing", "logprob": -0.5}])
+    assert chosen is None
+    assert dist == {}
+
+
+def test_parse_letter_variants():
+    judge = _mi("acme/Judge", {Capability.COMPLETION})
+    a = _mi("acme/A", {Capability.COMPLETION})
+    b = _mi("acme/B", {Capability.COMPLETION})
+    r = Router(judge=judge, candidates=[judge, a, b])
+    assert r.parse_choice_text("A") is a
+    assert r.parse_choice_text("(B)") is b
+    assert r.parse_choice_text("option A") is a
+    assert r.parse_choice_text("A.") is a
+    # a model name is NOT a letter -> falls through to name parsing
+    assert r.parse_choice_text("acme/B") is b
+    assert r.parse_choice_text("totally unknown") is None
+
+
+def test_choice_prompt_uses_option_letters_and_request():
+    judge = _mi("acme/Judge", {Capability.COMPLETION})
+    a = _mi("acme/A", {Capability.COMPLETION})
+    b = _mi("acme/B", {Capability.COMPLETION})
+    r = Router(judge=judge, candidates=[judge, a, b])
+    msgs = r.build_choice_prompt("summarize this")
+    assert "model router" in msgs[0]["content"].lower()
+    user = msgs[1]["content"]
+    assert "A. acme/A" in user
+    assert "B. acme/B" in user
+    assert "summarize this" in user
+
+
+# ---- M13: integration — the router follows the judge's logprob distribution --
+
+
+def _make_logprob_hub(root: Path) -> Path:
+    """Judge + SmallLM + BigLM, all completion-capable, distinct sizes.
+
+    (Unlike _make_router_hub's Embedder, both candidates are servable via /api/chat,
+    so routing to the smallest one returns 200 rather than a capability 400.)
+    """
+    sha = "d" * 40
+    hub = root / "hub"
+
+    def make(org: str, name: str, cfg: dict, weight: int) -> None:
+        mdir = hub / f"models--{org}--{name}"
+        (mdir / "refs").mkdir(parents=True)
+        (mdir / "refs" / "main").write_text(sha)
+        snap = mdir / "snapshots" / sha
+        snap.mkdir(parents=True)
+        (snap / "config.json").write_text(json.dumps(cfg))
+        (snap / "model.safetensors").write_bytes(b"\0" * weight)
+
+    make("acme", "JudgeLM", {"architectures": ["JudgeForCausalLM"], "model_type": "judge",
+                             "hidden_size": 64, "num_hidden_layers": 1, "vocab_size": 256}, 512)
+    make("acme", "SmallLM", {"architectures": ["SmallForCausalLM"], "model_type": "small",
+                             "hidden_size": 64, "num_hidden_layers": 1, "vocab_size": 256}, 1024)
+    make("acme", "BigLM", {"architectures": ["BigForCausalLM"], "model_type": "big",
+                           "hidden_size": 512, "num_hidden_layers": 8, "vocab_size": 4096}, 8_000_000)
+    return hub
+
+
+def make_logprobs_stub(prefer_letter: str) -> Starlette:
+    """A judge whose /v1/chat/completions returns top_logprobs favoring `prefer_letter`.
+
+    Distinguishes logprob-scoring from the fallback (which would pick the largest
+    candidate regardless of the distribution).
+    """
+
+    async def health(_r):
+        return PlainTextResponse("OK")
+
+    async def chat(request):
+        body = await request.json()
+        msgs = body.get("messages", [])
+        system = next((m.get("content", "") for m in msgs if m.get("role") == "system"), "")
+        if "model router" in system.lower():
+            logp = {L: (-0.3 if L == prefer_letter else -2.0) for L in "ABCDEF"}
+            top = sorted(({"token": L, "logprob": v} for L, v in logp.items()), key=lambda e: e["logprob"], reverse=True)
+            return JSONResponse(
+                {
+                    "id": "r",
+                    "object": "chat.completion",
+                    "model": body.get("model", "stub"),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": prefer_letter},
+                            "finish_reason": "length",
+                            "logprobs": {"content": [{"token": prefer_letter, "logprob": logp[prefer_letter], "top_logprobs": top}]},
+                        }
+                    ],
+                }
+            )
+        return JSONResponse(
+            {
+                "id": "r",
+                "object": "chat.completion",
+                "model": body.get("model", "stub"),
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "routed-ok"}, "finish_reason": "stop"}],
+            }
+        )
+
+    return Starlette(routes=[Route("/health", health), Route("/v1/chat/completions", chat, methods=["POST"])])
+
+
+@pytest.fixture()
+def logprob_router_client(tmp_path: Path, monkeypatch):
+    """App with a judge configured and a logprobs-returning stub worker.
+
+    The stub is parameterised per-test via ``logprob_router_client._set_preferred``.
+    """
+    from fastapi.testclient import TestClient
+
+    from nvllm_service.config import Settings
+    from nvllm_service.main import create_app
+    from nvllm_service.workers import STATE_READY, Worker
+
+    settings = Settings(hf_hub_root=_make_logprob_hub(tmp_path), router_judge="acme/JudgeLM")
+    app = create_app(settings)
+
+    state = {"prefer": "B"}  # default: favor the last (smaller) candidate, not the fallback-largest
+    port = _free_port()
+
+    # rebuild the stub on each request using the current preference
+    class _Dynamic(Starlette):
+        def __init__(self):
+            super().__init__(routes=[
+                Route("/health", lambda _r: PlainTextResponse("OK")),
+                Route("/v1/chat/completions", self._chat, methods=["POST"]),
+            ])
+
+        async def _chat(self, request):
+            prefer = state["prefer"]
+            logp = {L: (-0.3 if L == prefer else -2.0) for L in "ABCDEF"}
+            top = sorted(({"token": L, "logprob": v} for L, v in logp.items()), key=lambda e: e["logprob"], reverse=True)
+            body = await request.json()
+            return JSONResponse(
+                {
+                    "id": "r",
+                    "object": "chat.completion",
+                    "model": body.get("model", "stub"),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": prefer},
+                            "finish_reason": "length",
+                            "logprobs": {"content": [{"token": prefer, "logprob": logp[prefer], "top_logprobs": top}]},
+                        }
+                    ],
+                }
+            )
+
+    config = uvicorn.Config(_Dynamic(), host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    threading.Thread(target=server.run, daemon=True).start()
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        try:
+            if httpx.get(f"http://127.0.0.1:{port}/health", timeout=1.0).status_code == 200:
+                break
+        except httpx.HTTPError:
+            pass
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("logprob stub did not start")
+
+    manager = app.state.manager
+
+    async def fake_ensure(info, keep_alive=None, is_judge=False):
+        w = manager.workers.get(info.name)
+        if w is None or w.state != STATE_READY:
+            w = Worker(info=info, port=port, state=STATE_READY, pid=9999, is_judge=is_judge)
+            manager.workers[info.name] = w
+        else:
+            w.is_judge = is_judge
+        return w
+
+    monkeypatch.setattr(manager, "ensure", fake_ensure)
+    c = TestClient(app)
+    c._set_preferred = lambda letter: state.update(prefer=letter)
+    with c:
+        yield c
+
+
+def test_auto_routes_by_logprob_not_fallback(logprob_router_client):
+    """The router must follow the judge's distribution, not fall back to largest.
+
+    Favoring the SMALLEST candidate (which is not the largest-model fallback) and
+    asserting it is chosen proves the choice came from the logprob distribution.
+    """
+    r = logprob_router_client.app.state.router
+    smallest = min(r.candidates, key=lambda m: m.size or 0)
+    assert smallest is not r.fallback()  # sanity: they differ, so this test is meaningful
+    letter = option_symbol(r.candidates.index(smallest))
+    logprob_router_client._set_preferred(letter)
+    resp = logprob_router_client.post("/api/chat", json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]})
+    assert resp.status_code == 200
+    assert resp.json()["model"] == smallest.name
+
+
+def test_api_route_returns_distribution(logprob_router_client):
+    r = logprob_router_client.app.state.router
+    logprob_router_client._set_preferred(option_symbol(0))
+    resp = logprob_router_client.post("/api/route", json={"text": "hello"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["alias"] == ROUTE_ALIAS
+    assert body["backend"] in ("vllm-logprob", "vllm-text")
+    assert body["judge"] == "acme/JudgeLM:main"
+    assert body["chosen"] in [m.name for m in r.candidates]
+    # a real distribution over the candidates, summing to ~1
+    assert body["distribution"]
+    assert abs(sum(body["distribution"].values()) - 1.0) < 1e-6
+
+
+def test_api_route_400_when_not_configured(client):
+    r = client.post("/api/route", json={"text": "hello"})
+    assert r.status_code == 400
+    assert "routing not configured" in r.json()["error"]
+
+
+def test_router_endpoint_reports_backend(router_client):
+    body = router_client.get("/api/router").json()
+    assert body["enabled"] is True
+    assert body["backend"] == "vllm"  # default backend

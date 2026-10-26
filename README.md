@@ -8,10 +8,16 @@ inference engine: one `nvllm` CLI, a resident model service, and local agents
 > (Ollama-style). The old `nvllm-serve` binary is gone — `nvllm serve` replaces
 > it (the installer retires the old symlink/unit automatically).
 >
-> **0.4.0 (this release):** `nvllm create` virtual models (base + system prompt
-> + sampling params — metadata only, weights untouched), image & tool-call UX in
-> `run`/REPL, and a self-contained one-line install (tarball bundles python +
-> vLLM + nvllm).
+> **0.4.0:** `nvllm create` virtual models (base + system prompt + sampling
+> params — metadata only, weights untouched), image & tool-call UX in `run`/REPL,
+> and a self-contained one-line install (tarball bundles python + vLLM + nvllm).
+>
+> **0.5.0 (this release):** the Router judge is now a **decision model** (System
+> One) — a small, always-resident model that picks the best backend model by
+> *scoring the candidate options*, not by free text. Two judge backends
+> (default: vLLM + logprob scoring; optional: in-process HuggingFace
+> one-forward-pass readout), a `nvllm route` dry-run, and the license moves
+> **Apache-2.0 → MIT**.
 
 Built to serve **NVFP4-quantized** models at full speed on **DGX Spark (GB10)**
 unified memory. It discovers models from your local HuggingFace hub cache,
@@ -43,6 +49,7 @@ nvllm run nvidia/Qwen3-8B-NVFP4      # interactive REPL: /help /bye /clear /set 
 nvllm create assistant --from nvidia/Qwen3-8B-NVFP4 \
   --system "你是一个简洁的中文助手" --temperature 0.3    # virtual model (metadata only)
 nvllm rm assistant                   # remove a virtual model
+nvllm route "prove sqrt(2) is irrational"   # preview which model 'auto' would pick (dry-run)
 nvllm launch claude -p "hello"       # run Claude Code on the local models
 nvllm launch codex exec "say hi"     # run Codex CLI on the local models
 nvllm launch --list                  # supported agents + availability
@@ -137,7 +144,8 @@ include them.
 | `nvllm create NAME --from M` | `ollama create` | **metadata only**: base + system + params (NvLLM never copies weights; Ollama builds a GGUF) |
 | `nvllm pull` | `ollama pull` | **not integrated** — NvLLM never downloads models; it prints guidance (`hf download <org>/<name>`) |
 | `nvllm rm NAME` | `ollama rm` | works for **created** models; for HF-cache models it prints guidance (delete the `models--*` dir) |
-| `model: "auto"` | — | NvLLM-only: the Router picks the best model per request |
+| `model: "auto"` | — | NvLLM-only: the decision-model Router picks the best backend model per request |
+| `nvllm route TEXT` | — | NvLLM-only: preview the routing decision + distribution (runs only the judge) |
 
 Client commands talk to a running server over HTTP (default
 `http://127.0.0.1:8004`; override with `NVLLM_SERVER` or `--server`).
@@ -159,31 +167,79 @@ Client commands talk to a running server over HTTP (default
   then the call is forwarded. Ollama bodies are translated to OpenAI and back,
   including streaming (OpenAI SSE in, Ollama NDJSON out).
 
-## Routing (auto model selection)
+## Routing (auto model selection with a decision model)
 
-Set `--router-judge` to a small, fast model (it stays resident and is never
-evicted). Then any inference request can use `model: "auto"`: the judge reads the
-request plus the list of servable models, picks the best one, and the service
-forwards to it. If the judge can't be consulted or returns something
-unrecognizable, the router falls back to the largest model rather than failing.
+Set `--router-judge` to a **decision model** (a *System One* structured-decision
+model — e.g. `startlux-models/StartLux-Decision-v1.1-4B-Instant` or
+`internlm/Intern-Decision-4B`), not a chat LLM. It stays resident and is never
+evicted. Then any inference request can use `model: "auto"`: the judge reads the
+request plus the list of candidate models, **scores the candidates as options
+(A/B/C, …) and picks the best one**, and the service forwards to it.
 
-> **Pick a non-reasoning judge.** A judge that emits chain-of-thought (reasoning
-> models) instead of a bare model name will not parse cleanly and will fall back.
-> A small, well-instructed non-reasoning model (e.g. `Llama-3.1-8B-Instruct`)
-> routes cleanly. Constrain the candidates with `--router-candidates` so the judge
-> can only pick models that actually fit in memory.
+Routing is a "pick one of N" decision — exactly what these models are trained
+for — so instead of parsing free text the Router reads the judge's
+**probability distribution over the candidate options** and takes the argmax.
+That distribution is exposed (see `/api/route` below), so you see the confidence,
+not just the winner.
+
+### Judge backends
+
+| `--router-backend` | How the judge runs | Notes |
+|---|---|---|
+| `vllm` (default) | the judge is a `vllm serve` worker; the choice is read from the response's `top_logprobs` over the option letters | zero new dependencies, reuses all worker lifecycle; works on DGX Spark with vLLM 0.31 |
+| `transformers` | the judge is loaded **in-process** (HuggingFace + torch) and read with **one forward pass** — the native "softmax over the allowed option symbols" | more faithful; needs `transformers`+`torch` in the service env and a transformers build that knows the model's architecture |
+
+Both backends share the same scoring core, so they agree on how a distribution
+becomes a choice. If the judge can't be consulted or returns nothing usable, the
+Router degrades to the **largest candidate** rather than failing the request.
+
+### Dry-run: `nvllm route`
+
+Preview the decision **without consuming a backend model** (only the judge runs) —
+handy for exploring routing:
+
+```bash
+nvllm route "prove that sqrt(2) is irrational"
+# route -> nvidia/Qwen3-14B-NVFP4:main    (backend: vllm-logprob, judge: …)
+#   distribution:
+#       0.3410  ##########  nvidia/Qwen3-14B-NVFP4:main
+#       0.2827  ########  nvidia/Qwen3-32B-NVFP4:main
+#       …
+```
+
+### Setup
 
 ```bash
 nvllm serve \
-  --router-judge nvidia/Llama-3.1-8B-Instruct-NVFP4 \
-  --router-candidates "nvidia/Qwen3-8B-NVFP4,nvidia/Qwen3-14B-NVFP4"
+  --router-judge startlux-models/StartLux-Decision-v1.1-4B-Instant \
+  --router-candidates "nvidia/Qwen3-8B-NVFP4,nvidia/Qwen3-14B-NVFP4,nvidia/Qwen3-32B-NVFP4,nvidia/Phi-4-reasoning-plus-NVFP4" \
+  --router-top-logprobs 10 \
+  --gpu-memory-utilization 0.35     # see the DGX Spark note below
 
-curl -s localhost:8004/api/router | jq          # routing status + candidates
-curl -s localhost:8004/api/chat -d '{
+curl -s localhost:8004/api/router | jq          # routing status + backend + candidates
+nvllm route "what is 2+2?"                      # dry-run preview
+curl -s localhost:8004/api/chat -d '{            # real routing
   "model": "auto",
   "messages": [{"role": "user", "content": "hello"}]
 }'
 ```
+
+> **Practical notes (validated on DGX Spark GB10):**
+> - **Constrain candidates** with `--router-candidates`. With dozens of models in
+>   the cache the option list is long; keep it to the few models you actually
+>   route between. `--router-top-logprobs` must be ≥ the number of candidates so
+>   every option letter is captured.
+> - **Use a decision model, and prefer the 4B class.** Measured with the same
+>   prompts: a **4B** decision model picks the light model for trivial tasks and
+>   the vision model for image requests (clear signal), while the **0.8B** model
+>   was near a coin-flip and occasionally wrong-direction. When the candidates are
+>   all similar general LLMs the distribution is naturally flatter.
+> - **Licensing of the judge:** `StartLux-Decision` is CC-BY-NC-4.0 (non-commercial),
+>   `Intern-Decision` / `SII-Decision` are Apache-2.0. Pick per your use.
+> - **`--gpu-memory-utilization`**: the judge is a worker too. On the Spark the
+>   OS/desktop hold much of the 128G, so the default `0.5` can fail to start
+>   (it requests ~61G of the 122G device). Use a lower value (e.g. `0.35`) for the
+>   resident judge; the decision model is small and needs little.
 
 ## Installation
 
@@ -267,7 +323,7 @@ Work from the repo with an editable venv instead:
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pip install "vllm==0.31.0"          # the engine (validated baseline)
-python -m pytest -q                 # 143 tests, no GPU needed
+python -m pytest -q                 # 158 tests, no GPU needed
 ```
 
 ## Quickstart
@@ -312,8 +368,10 @@ Precedence: **CLI flag > environment variable > default**.
 | `--max-models` | `NVLLM_MAX_MODELS` | `1` | max non-judge models resident at once (judge excluded) |
 | `--max-model-len` | `NVLLM_MAX_MODEL_LEN` | (vLLM default) | passed to workers |
 | `--gpu-memory-utilization` | `NVLLM_GPU_MEMORY_UTILIZATION` | `0.5` | passed to workers |
-| `--router-judge` | `NVLLM_ROUTER_JUDGE` | — | model name to act as the Router judge |
-| `--router-candidates` | `NVLLM_ROUTER_CANDIDATES` | all supported | comma-separated repos the Router may route to (keeps it from picking a model that won't fit in memory) |
+| `--router-judge` | `NVLLM_ROUTER_JUDGE` | — | a **decision model** to act as the Router judge |
+| `--router-candidates` | `NVLLM_ROUTER_CANDIDATES` | all supported | comma-separated repos the Router may route to (keep it to the models you route between) |
+| `--router-backend` | `NVLLM_ROUTER_BACKEND` | `vllm` | judge backend: `vllm` (serve + logprob scoring) or `transformers` (in-process one-forward readout) |
+| `--router-top-logprobs` | `NVLLM_ROUTER_TOP_LOGPROBS` | `32` | top-k logprobs to request from the judge for option scoring (≥ number of candidates) |
 | — | `NVLLM_STATE_DIR` | `~/.local/share/nvllm-serve` | state dir: created-models store (`created.json`) + `launch claude` settings.json |
 
 Also honored by workers: `NVLLM_MAX_NUM_SEQS`, `NVLLM_TRUST_REMOTE_CODE`,
@@ -403,19 +461,57 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-The suite (143 tests) uses a fake HF hub cache and a stub OpenAI-compatible
-worker, so it runs without a GPU or a real vLLM install — it also runs in CI.
+The suite (158 tests) uses a fake HF hub cache and a stub OpenAI-compatible
+worker (including a logprobs-returning stub for the Router), so it runs without a
+GPU or a real vLLM install — it also runs in CI.
+
+## What NvLLM is, borrows, and pulls
+
+**Identity.** NvLLM is an **Ollama-style, resident inference backend for models in
+your local HuggingFace cache**, driven by **vLLM**. It benchmarks Ollama's API and
+feel (subcommand CLI, `/api/*`, `run`/`repl`, `ps`/`stop`, `create`) and adds its
+own traits: models are **discovered from the local HF cache, never downloaded**,
+and it is tuned to get full speed from **NVFP4-quantized models on DGX Spark (GB10)**
+unified memory (default port **8004**).
+
+**This repository contains only NvLLM's own code.** It does **not** include the
+upstream vLLM engine, the reference Ollama, or any other referenced project's
+source. (The sibling `ollama/` and `vllm/` checkouts, if present, are local
+references and are not part of this repo.)
+
+**What it borrows**
+- **Ollama** — the CLI shape, `/api/*` endpoints, and the "resident runner" UX.
+  NvLLM speaks those protocols so Ollama-style clients work unchanged.
+- **vLLM** — the inference engine. NvLLM **launches `vllm serve` as a subprocess**
+  and talks to it over HTTP; it does **not** bundle or `import` vLLM's code. They
+  are independent programs (analogous to Ollama ↔ llama.cpp). vLLM is a *runtime
+  prerequisite*, not a code dependency of this repo.
+
+**What it pulls at install / runtime** (none of it is in this repo):
+- **Install:** a pinned **`vllm==0.31.0`** (the validated DGX Spark baseline) +
+  its matching torch/FlashInfer, into an **isolated venv at `~/.nvllm/venv`** —
+  so it does **not** interfere with any vLLM you deploy yourself. Override with
+  `--vllm-version V` / `NVLLM_VLLM_VERSION`.
+- **Runtime:** your **HuggingFace model cache** (you supply the weights with e.g.
+  `hf download <org>/<name>`; NvLLM never downloads them) and, for the optional
+  `transformers` judge backend, `transformers` + `torch`.
+
+**What it builds (original):** HF-cache model discovery & capability detection;
+the resident worker supervisor (spawn / health / LRU-evict / in-flight protection);
+the Ollama + OpenAI + Anthropic tri-protocol proxy with streaming translation;
+the **decision-model Router** (System One judge, logprob / one-forward readout,
+`nvllm route` dry-run); `nvllm launch` local agents; and metadata-only virtual
+models.
 
 ## Licensing
 
-nvllm is licensed under the **Apache License 2.0** (see [LICENSE](LICENSE)).
+nvllm is licensed under the **MIT License** (see [LICENSE](LICENSE)).
 
-**Runtime dependency:** nvllm requires a **vLLM** installation
-([Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)). It launches
-`vllm serve` as a **subprocess** and talks to it over HTTP — it does **not**
-bundle or import vLLM's source code. The two are therefore independent programs
-(analogous to Ollama ↔ llama.cpp); vLLM is a runtime prerequisite, not a code
-dependency of this repository.
+The decision models used as Router judges are third-party checkpoints with their
+own licenses — e.g. `Intern-Decision` / `SII-Decision` (Apache-2.0),
+`StartLux-Decision` (CC-BY-NC-4.0, non-commercial). They are **not** part of this
+repo and are governed by their own terms; choose a judge whose license fits your
+use.
 
 ## Milestones
 
@@ -450,3 +546,11 @@ dependency of this repository.
   gates `ANTHROPIC_MODEL` client-side but accepts any name in `settings.json`
   → `CLAUDE_CONFIG_DIR`); self-contained release (`build-release.sh` tarball
   with bundled python+vLLM, `bootstrap.sh` one-line install). ✅
+- **M13 (0.5.0)** — the Router judge becomes a **decision model (System One)**:
+  candidates are scored as options and the choice is read from the judge's
+  probability distribution over the option letters (default **vLLM + logprob**
+  backend, or in-process **transformers** one-forward readout); graceful
+  fallback chain (logprob → letter/text → largest); `nvllm route` dry-run +
+  `/api/route` exposing the distribution; deep review pass; **license moved
+  Apache-2.0 → MIT**; README documents what NvLLM is / borrows / original / pulls.
+  Validated end-to-end on DGX Spark against real 0.8B & 4B decision models. ✅

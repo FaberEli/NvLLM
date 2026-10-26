@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nvllm-serve"
-version = "0.4.0"
-description = "Ollama-style resident inference service backed by vLLM (HF-cache model discovery, fixed port, model management, optional auto-routing, Ollama-style CLI)"
-license = "Apache-2.0"
+version = "0.5.0"
+description = "Ollama-style resident inference service backed by vLLM (HF-cache model discovery, fixed port, model management, decision-model auto-routing, Ollama-style CLI)"
+license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

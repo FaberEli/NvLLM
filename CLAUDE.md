@@ -5,7 +5,7 @@ user-facing doc; this file is for working on the code.
 
 ## Running
 
-- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (143 tests)
+- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (158 tests)
 - Dev server (default bind `0.0.0.0:8004`): `nvllm serve` or
   `.venv/bin/python -m nvllm_service serve --hf-hub-root <cache>`
 - **Single entry (0.3.0, breaking):** `nvllm` (= `nvllm_service.cli:main`) and
@@ -70,9 +70,15 @@ user-facing doc; this file is for working on the code.
   `_resolve_model(body)` resolves the request's model — **registered aliases**
   (`app.state.model_aliases`, set via `POST /v1/aliases`) are mapped back to the
   real catalog model first, then the `"auto"` alias triggers the Router (if
-  `--router-judge` is set); otherwise it's `find_model`. All inference endpoints
-  share this one resolution path. Endpoints then `ensure()` a worker and delegate
-  to `forward`.
+  `--router-judge` is set) via the `_route(text)` helper — which dispatches on
+  `router.backend`: `"vllm"` (default) does `ensure(judge, keep_alive=-1)` then
+  `router.decide(...)`; `"transformers"` calls `app.state.transformer_judge.decide(...)`
+  (created in `create_app` only for that backend, so the `vllm` path never imports
+  it). `RouterDecision` is returned; `_resolve_model` uses `.chosen`. `POST /api/route`
+  is the dry-run (runs only the judge, never the backend model) and returns the
+  decision + distribution; `GET /api/router` reports `backend`/judge/candidates.
+  All inference endpoints share this one resolution path. Endpoints then `ensure()`
+  a worker and delegate to `forward`.
   **Virtual models (0.4.0):** `app.state.created = CreatedStore(...)`;
   `_resolve_with_spec(body)` = alias/auto resolution + created-model check
   (virtual name → rewrite `body["model"]` to the base; returns the
@@ -92,10 +98,27 @@ user-facing doc; this file is for working on the code.
   `base_url`, `name`, and `inflight` (streaming forwards hold `inflight` for the
   stream's lifetime so a `keep-alive=0` worker can't be reaped mid-stream — see
   `tests/test_forward_stream.py`).
-- `router.py` — `Router`: the judge model picks a target from the candidates.
-  `pick()` calls the judge via `forward.forward_json`, `parse_choice()` resolves
-  its free-text reply (verbatim `org/name` first, bare name as a whole token),
-  `fallback()` is the largest candidate. `ROUTE_ALIAS` = `"auto"`.
+- `router.py` — `Router` (0.5.0: **decision-model judge**). The judge is a
+  *System One* decision model, not a chat LLM. `build_choice_prompt()` lists the
+  candidates as options **A/B/C…**; `decide()` (vLLM backend) asks the judge for
+  `max_tokens=1, logprobs=true, top_logprobs=K` and `score_logprobs()` renormalizes
+  the option letters' logprobs into a distribution → argmax. Fallback chain:
+  logprob scoring → `parse_choice_text()` (a bare option letter, else the old
+  name-based `parse_choice()`) → `fallback()` (largest). Returns a
+  `RouterDecision` (chosen + distribution + backend + raw). `option_symbol(i)`
+  maps index→letter (A…Z, a…z, 0…). `top_logprobs` auto-grows to cover the
+  candidate count. `ROUTE_ALIAS` = `"auto"`. **`softmax_topk(pairs)`** is the
+  shared pure scoring core (numerically-stable softmax over a subset of
+  log-scale values → `(argmax_index, probs)`): used by `score_logprobs` (vLLM
+  logprobs) *and* `transformer_router._decide_sync` (raw logits), and unit-tested
+  directly (`test_router.py`) since it is the one piece common to both judge backends.
+- `transformer_router.py` — the **`transformers` judge backend**: `TransformerJudge`
+  loads the decision model in-process (HuggingFace `AutoModelForCausalLM`, lazy +
+  thread-safe) and reads the choice with **one forward pass** — the option symbols'
+  token ids at the last prompt position, scored via the shared `softmax_topk`.
+  torch/transformers are imported **lazily inside methods** so the default `vllm`
+  backend never pulls them. `decide()` is async (blocking work via
+  `asyncio.to_thread`). Only used when `settings.router_backend == "transformers"`.
 - `cli.py` — the single entry. `run_server()` is the server body (flags — keep in
   sync with `config.py` when adding flags); `main()` dispatches subcommands;
   `_REFUSALS` holds the polite refusals for `pull`/`push`/`login`/`cp` — **do not
@@ -103,14 +126,18 @@ user-facing doc; this file is for working on the code.
   deliberate NvLLM trait). `create` and `rm` are **real subcommands** since 0.4.0:
   `create NAME --from MODEL [--system …] [--temperature …] [--top-p …]
   [--num-predict …]` and `rm NAME` (rm on a non-created model still prints the
-  HF-cache-delete guidance, via the server 404).
+  HF-cache-delete guidance, via the server 404). **0.5.0:** `route TEXT`
+  (dry-run routing preview → `client.cmd_route` → `POST /api/route`); `serve`
+  gains `--router-backend` and `--router-top-logprobs`.
 - `client.py` — the Ollama-style client commands (list/ps/show/run/stop/version/
-  create/rm). Synchronous `httpx` (CLI is a foreground process; no event loop).
+  create/rm/route). Synchronous `httpx` (CLI is a foreground process; no event loop).
   `repl()` takes injectable `in_fn`/`out_fn` so tests script the whole session.
   0.4.0 additions: `run_prompt(…, images, tools)` (image files → base64 `images`
   on the last user message; `⚙ tool: name(args)` printed from streamed
   tool_calls) and REPL image-path turns + `/tools <file>` (⚠️ the image-path
   check runs **before** the slash-command check — image paths start with `/`).
+  **0.5.0:** `cmd_route(url, text)` — POST `/api/route`, prints the chosen model +
+  the judge's probability distribution.
 - `launch.py` — `nvllm launch`: agent registry (`AGENTS`: claude/codex/qwen/
   gemini/opencode/aider) as pure data (env + args templates with `<base>`/`<model>`/
   `<alias>` placeholders) + shared exec path. Adding an agent = one `Agent(...)` entry.

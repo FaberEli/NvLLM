@@ -96,6 +96,14 @@ class Settings:
     router_candidates: list[str] = field(
         default_factory=lambda: [c.strip() for c in os.environ.get("NVLLM_ROUTER_CANDIDATES", "").split(",") if c.strip()]
     )
+    # judge backend: "vllm" (default) serves the judge via `vllm serve` and scores
+    # the choice from the response's top_logprobs; "transformers" loads the judge
+    # in-process (HuggingFace masked-next-token readout, one forward pass).
+    router_backend: str = field(default_factory=lambda: _env_str("NVLLM_ROUTER_BACKEND", "vllm"))
+    # how many top token logprobs to request from the judge for option scoring
+    # (must be >= the number of candidates for a full distribution; 32 covers
+    # realistic candidate counts and keeps the read cheap).
+    router_top_logprobs: int = field(default_factory=lambda: max(1, _env_int("NVLLM_ROUTER_TOP_LOGPROBS", 32)))
 
     # --- misc ---
     # worker log dir; $NVLLM_LOG_DIR (set by install/systemd); None -> ~/.local/share/nvllm-serve/logs

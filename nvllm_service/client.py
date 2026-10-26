@@ -210,6 +210,27 @@ def cmd_rm(url: str, name: str) -> int:
     return 0
 
 
+def cmd_route(url: str, text: str) -> int:
+    """`nvllm route "text"` — preview which model the router would pick (dry-run).
+
+    Runs only the judge (decision model), not the routed backend model, so it is
+    cheap and safe to use while exploring routing.
+    """
+    require_server(url)
+    body = _post_json(url, "/api/route", {"model": "auto", "text": text})
+    print(f"route -> {body.get('chosen')}    (backend: {body.get('backend')}, judge: {body.get('judge')})")
+    dist = body.get("distribution") or {}
+    if dist:
+        print("  distribution:")
+        for name, p in sorted(dist.items(), key=lambda kv: kv[1], reverse=True):
+            bar = "#" * int(round(float(p) * 30))
+            print(f"    {float(p):7.4f}  {bar:<30}  {name}")
+    raw = body.get("raw")
+    if raw:
+        print(f"  raw answer: {raw!r}")
+    return 0
+
+
 def cmd_version(url: str) -> int:
     print(f"nvllm {__version__}")
     try:

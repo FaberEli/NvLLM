@@ -20,7 +20,7 @@ from .catalog import Capability, ModelInfo
 from .config import Settings
 from .created import CreatedModel, CreatedStore
 from .discovery import by_name, discover
-from .router import ROUTE_ALIAS, Router
+from .router import ROUTE_ALIAS, Router, RouterDecision
 from .workers import Worker, WorkerManager
 
 log = logging.getLogger(__name__)
@@ -61,7 +61,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # in the state dir so they survive restarts.
     app.state.created = CreatedStore(settings.state_dir() / "created.json")
 
-    # M3: Router — only active when a judge model is configured
+    # M3 (M13): Router — only active when a judge model is configured. The judge
+    # is a decision model (or any LLM); backend "vllm" (default) scores the choice
+    # from the judge's logprobs, "transformers" reads it in-process.
     router: Router | None = None
     if settings.router_judge:
         judge = by_name(catalog, settings.router_judge)
@@ -71,9 +73,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if settings.router_candidates:
             wanted = set(settings.router_candidates)
             candidates = [m for m in candidates if m.repo in wanted]
-        router = Router(judge=judge, candidates=candidates)
-        log.info("router enabled: judge=%s, %d candidate(s)", judge.name, len(router.candidates))
+        router = Router(
+            judge=judge,
+            candidates=candidates,
+            backend=settings.router_backend,
+            top_logprobs=settings.router_top_logprobs,
+        )
+        log.info("router enabled: judge=%s, backend=%s, %d candidate(s)", judge.name, router.backend, len(router.candidates))
     app.state.router = router
+    # "transformers" judge backend: one in-process HuggingFace reader, resident and
+    # shared across requests (created lazily so the "vllm" backend never imports it).
+    app.state.transformer_judge = None
+    if router is not None and router.backend == "transformers":
+        from . import transformer_router
+
+        app.state.transformer_judge = transformer_router.TransformerJudge(router)
 
     @app.exception_handler(HTTPException)
     async def _ollama_style_errors(request: Request, exc: HTTPException) -> JSONResponse:
@@ -131,6 +145,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return i
         return ""
 
+    async def _route(request_text: str) -> "RouterDecision":
+        """Run the router for `request_text` and return the decision.
+
+        Dispatches on the configured judge backend: "vllm" (default) serves the
+        judge via WorkerManager and scores its logprobs; "transformers" reads the
+        in-process decision model. Never raises on a bad judge answer — the router
+        itself degrades to a fallback candidate.
+        """
+        if router is None:
+            raise HTTPException(
+                status_code=400,
+                detail="routing not configured; set --router-judge to enable model='auto'",
+            )
+        if router.backend == "transformers":
+            return await app.state.transformer_judge.decide(request_text)
+        judge_worker = await ensure(router.judge, keep_alive=-1)
+        return await router.decide(judge_worker, request_text)
+
     async def _resolve_model(body: dict) -> ModelInfo:
         """Resolve the request's model.
 
@@ -144,15 +176,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             body["model"] = target
             name = target
         if name == ROUTE_ALIAS:
-            if router is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="routing not configured; set --router-judge to enable model='auto'",
-                )
-            judge_worker = await ensure(router.judge, keep_alive=-1)
-            chosen = await router.pick(judge_worker, _request_text(body))
-            log.info("routed 'auto' -> %s", chosen.name)
-            return chosen
+            decision = await _route(_request_text(body))
+            log.info("routed 'auto' -> %s (via %s, dist=%s)", decision.chosen.name, decision.backend, decision.distribution)
+            return decision.chosen
         return find_model(name)
 
     def _created(name: str) -> CreatedModel | None:
@@ -357,7 +383,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "enabled": True,
             "alias": ROUTE_ALIAS,
+            "backend": router.backend,
             "judge": router.judge.name,
+            "candidates": [m.name for m in router.candidates],
+        }
+
+    @app.post("/api/route")
+    async def api_route(request: Request) -> dict[str, Any]:
+        """Preview the routing decision WITHOUT consuming a backend model.
+
+        Body: ``{"text": "..."}`` (or the usual ``messages``/``prompt``). Returns
+        the chosen model, the judge's probability distribution over the
+        candidates, and which backend produced it. This is the ``nvllm route``
+        dry-run counterpart — it only runs the judge, not the routed model.
+        """
+        body = await _json_body(request)
+        if router is None:
+            raise HTTPException(status_code=400, detail="routing not configured; set --router-judge to enable model='auto'")
+        text = str(body.get("text") or "").strip() or _request_text(body)
+        decision = await _route(text)
+        return {
+            "alias": ROUTE_ALIAS,
+            "backend": decision.backend,
+            "judge": router.judge.name,
+            "chosen": decision.chosen.name,
+            "distribution": decision.distribution,
+            "raw": decision.raw,
             "candidates": [m.name for m in router.candidates],
         }
 
