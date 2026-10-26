@@ -303,6 +303,88 @@ def test_show_created_model_shows_wrapper(nvllm_env, capsys):
     cli.main(["rm", "assistant"])
 
 
+# ---- router activation (nvllm router on/off/status) ----------------------------
+
+
+def test_router_status_not_activated(nvllm_env, capsys):
+    assert cli.main(["router", "status"]) == 0
+    out = capsys.readouterr().out
+    assert "not activated" in out
+    # the decision model in the cache is listed
+    assert "acme/DecisionLM:main" in out
+
+
+def test_router_on_interactive_picks_judge(nvllm_env):
+    out: list[str] = []
+    lines = iter(["1"])  # pick the first (only) decision model
+
+    rc = c.cmd_router(
+        nvllm_env, "on",
+        in_fn=lambda prompt: next(lines),
+        out_fn=lambda *a, **k: out.append(" ".join(str(x) for x in a)),
+    )
+    joined = "".join(out)
+    assert rc == 0
+    assert "router activated" in joined
+    assert "acme/DecisionLM" in joined
+
+
+def test_router_on_with_recommend_then_pick(nvllm_env):
+    out: list[str] = []
+    lines = iter(["R", "1"])  # ask for a recommendation, then pick #1
+
+    rc = c.cmd_router(
+        nvllm_env, "on",
+        in_fn=lambda prompt: next(lines),
+        out_fn=lambda *a, **k: out.append(" ".join(str(x) for x in a)),
+    )
+    joined = "".join(out)
+    assert rc == 0
+    assert "recommend" in joined.lower()
+    assert "router activated" in joined
+
+
+def test_router_on_direct_judge_flag(nvllm_env, capsys):
+    assert cli.main(["router", "on", "--judge", "acme/DecisionLM"]) == 0
+    assert "router activated" in capsys.readouterr().out
+
+
+def test_router_status_configured_then_off(nvllm_env, capsys):
+    cli.main(["router", "on", "--judge", "acme/DecisionLM"])
+    capsys.readouterr()
+    assert cli.main(["router", "status"]) == 0
+    out = capsys.readouterr().out
+    assert "CONFIGURED" in out or "ACTIVE" in out
+    assert "acme/DecisionLM" in out
+    # deactivate
+    assert cli.main(["router", "off"]) == 0
+    assert "deactivated" in capsys.readouterr().out
+
+
+def test_router_on_no_decision_model_reports_none(no_dm_live_server):
+    """A hub with no decision model (no ``model_router.yaml``) surfaces an empty
+    decision-model list, and ``nvllm router on`` reports activation failed + guidance."""
+    # server side: the detection yields no decision models
+    body = httpx.get(f"{no_dm_live_server}/api/router").json()
+    assert body["decision_models"] == []
+    # client side: `nvllm router on` against that cache reports the failure + guidance
+    out: list[str] = []
+
+    def _eof(prompt):
+        raise EOFError  # never reached: the "no dms" branch returns before reading input
+
+    rc = c.cmd_router(
+        no_dm_live_server, "on",
+        in_fn=_eof,
+        out_fn=lambda *a, **k: out.append(" ".join(str(x) for x in a)),
+    )
+    assert rc == 1
+    joined = "".join(out)
+    assert "could not activate the router" in joined
+    assert "no System One decision models" in joined
+    assert "hf download" in joined
+
+
 # ---- vision + tools (run + REPL) --------------------------------------------------
 
 

@@ -159,6 +159,22 @@ def fake_hub(tmp_path: Path) -> Path:
     )
     make("acme", "Embedder", {"architectures": ["EmbedderModel"], "model_type": "embedder", "hidden_size": 64, "pooling": "mean"})
     make("acme", "WanVideo", {"architectures": ["WanForTextToVideo"], "model_type": "wan"})
+    # a "System One" decision model: a servable completion model that also ships the
+    # model_router.yaml marker NvLLM uses to detect decision models (the Router judge)
+    make(
+        "acme",
+        "DecisionLM",
+        {"architectures": ["DecisionLMForCausalLM"], "model_type": "decisionlm", "hidden_size": 96, "num_hidden_layers": 2, "vocab_size": 512},
+        {"chat_template": "{% for m in messages %}{{m.content}}{% endfor %}"},
+    )
+    (root / "models--acme--DecisionLM" / "snapshots" / _SHA / "model_router.yaml").write_text(
+        "model_router:\n"
+        "  name: DecisionLM-4B\n"
+        "  type: decision\n"
+        "  base_model: Qwen3-4B\n"
+        "  description: a 4B System One decision model for routing\n"
+        "  parameter_size: 4B\n"
+    )
     return root
 
 
@@ -235,3 +251,59 @@ def nvllm_env(live_server, monkeypatch):
     """Point the CLI at the live server via NVLLM_SERVER (like a user would)."""
     monkeypatch.setenv("NVLLM_SERVER", live_server)
     return live_server
+
+
+@pytest.fixture()
+def no_dm_live_server(tmp_path: Path, stub_server, monkeypatch):
+    """A live server whose hub has NO decision model (no ``model_router.yaml``).
+
+    Mirrors ``live_server`` but with a plain-only hub, so ``GET /api/router``
+    reports an empty ``decision_models`` list and ``nvllm router on`` hits the
+    "activation failed — no decision models" client branch.
+    """
+    import uvicorn
+
+    from nvllm_service.config import Settings
+    from nvllm_service.main import create_app
+    from nvllm_service.workers import STATE_READY, Worker
+
+    # a hub with a single plain completion model and no model_router.yaml
+    root = tmp_path / "hub_nodm"
+    mdir = root / "models--acme--PlainLM"
+    (mdir / "refs").mkdir(parents=True)
+    (mdir / "refs" / "main").write_text(_SHA)
+    snap = mdir / "snapshots" / _SHA
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text(json.dumps(
+        {"architectures": ["PlainLMForCausalLM"], "model_type": "plain", "hidden_size": 32, "num_hidden_layers": 1, "vocab_size": 64}
+    ))
+    (snap / "model.safetensors").write_bytes(b"\0" * 512)
+
+    settings = Settings(hf_hub_root=root, state_root=tmp_path / "state_nodm")
+    port = _free_port()
+    app = create_app(settings)
+    manager = app.state.manager
+
+    async def fake_ensure(info, keep_alive=None, is_judge=False):
+        w = manager.workers.get(info.name)
+        if w is None or w.state != STATE_READY:
+            w = Worker(info=info, port=stub_server, state=STATE_READY, pid=9999)
+            manager.workers[info.name] = w
+        return w
+
+    monkeypatch.setattr(manager, "ensure", fake_ensure)
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    t = threading.Thread(target=server.run, daemon=True)
+    t.start()
+    url = f"http://127.0.0.1:{port}"
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        try:
+            if httpx.get(f"{url}/healthz", timeout=1.0).status_code == 200:
+                yield url
+                return
+        except httpx.HTTPError:
+            pass
+        time.sleep(0.1)
+    pytest.fail("app server (no decision model) did not start in time")

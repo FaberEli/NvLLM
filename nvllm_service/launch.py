@@ -146,12 +146,15 @@ def pick_agent(name: str | None) -> Agent:
 
 
 def pick_default_model(catalog: list[dict]) -> str | None:
-    """Default launch model: the largest completion-capable model (same
-    philosophy as the Router's fallback: prefer capability, not novelty)."""
+    """Default launch model: the largest completion-capable model that is NOT a
+    decision model (a decision model is a router *judge*, not a general assistant),
+    same philosophy as the Router's fallback: prefer capability, not novelty."""
     best = None
     for m in catalog:
         if "completion" not in (m.get("capabilities") or []):
             continue
+        if (m.get("details") or {}).get("decision_model"):
+            continue  # decision models are judges, not general chat targets
         if best is None or int(m.get("size") or 0) > int(best.get("size") or 0):
             best = m
     return best["name"] if best else None

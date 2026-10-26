@@ -283,11 +283,11 @@
 <header class="hero">
   <div class="wrap">
     <div class="chips">
-      <span class="chip"><b>v0.5.0</b> 已发布</span>
+      <span class="chip"><b>v0.6.0</b> 已发布</span>
       <span class="chip">DGX Spark · GB10</span>
       <span class="chip">NVFP4 全速</span>
       <span class="chip">MIT</span>
-      <span class="chip">158 tests green</span>
+      <span class="chip">AutoRouter · 可选激活</span>
     </div>
     <h1>NvLLM <span class="grad">本地常驻推理服务</span></h1>
     <p class="sub">
@@ -297,7 +297,7 @@
     </p>
     <div class="rowbtns">
       <a class="btn primary" href="https://github.com/FaberEli/NvLLM">GitHub 仓库</a>
-      <a class="btn" href="https://github.com/FaberEli/NvLLM/releases/tag/0.5.0">Release 0.5.0</a>
+      <a class="btn" href="https://github.com/FaberEli/NvLLM/releases/tag/0.6.0">Release 0.6.0</a>
       <a class="btn" href="#live">在线实测 ↓</a>
     </div>
     <div class="oneline">
@@ -345,19 +345,19 @@ nvidia/Nemotron-Nano-9B-v2-NVFP4           9c0d1e2f     6.1 GB    5 days ago</sp
     <span class="k2"><b>端口</b> 默认 8004（<code>NVLLM_PORT</code>）</span>
     <span class="k2"><b>模型池</b> 本地 HF 缓存，<code>hf download &lt;org&gt;/&lt;name&gt;</code> 补充</span>
     <span class="k2"><b>并发</b> <code>--max-models</code> 控制常驻模型数（默认 1）</span>
-    <span class="k2"><b>路由</b> <code>--router-judge &lt;模型&gt;</code> 开启 <code>model:"auto"</code></span>
+    <span class="k2"><b>路由</b> <code>nvllm router on</code> 激活 → 选决策模型 judge → 出现 <code>AutoRouter</code></span>
   </div>
 </section>
 
 <!-- ================= 功能全景 ================= -->
 <section id="features">
   <h2><span class="no">02</span>功能全景</h2>
-  <p class="lede">v0.5.0 的完整能力面——每一条都有测试覆盖（158 tests）或 E2E 验证。</p>
+  <p class="lede">v0.6.0 的完整能力面——每一条都有测试覆盖（<span id="testcount-features">182</span> tests）或 E2E 验证。</p>
   <div class="grid">
     <div class="card reveal"><div class="ico">🖥️</div><h4>Ollama 风格 CLI</h4><p><code>serve / list / show / run / ps / stop / version / create / rm / launch</code>，<code>run</code> 支持一次性提问与交互式 REPL。</p></div>
     <div class="card reveal"><div class="ico">🔌</div><h4>三协议网关</h4><p>Ollama ↔ OpenAI 双向翻译，Anthropic Messages API 原生翻译，SSE / NDJSON 流式全通。</p></div>
     <div class="card reveal"><div class="ico">🧩</div><h4>虚拟模型 create</h4><p><code>nvllm create</code> 在任意缓存模型上叠加名字 + system prompt + 采样参数——无权重、共享 worker。</p></div>
-    <div class="card reveal"><div class="ico">🧭</div><h4>Router 决策模型路由</h4><p><code>model:"auto"</code> 由<b>常驻决策模型（System One）</b>把候选当选项打分、按概率分布选目标（默认 vLLM+logprob，可选进程内 one-forward）；<code>nvllm route</code> 干跑看分布；judge 常驻不驱逐。</p></div>
+    <div class="card reveal"><div class="ico">🧭</div><h4>Router 可选激活 + AutoRouter</h4><p><b>0.6.0：</b><code>nvllm router on</code> 扫缓存找 System One 决策模型（<code>model_router.yaml</code> 标记，不写死本地模型名），让你挑 judge——可选让<b>已加载的本地大模型读元数据推荐一个</b>；激活落盘，下次 <code>serve</code> 起 judge 常驻、模型列表多出 <code>AutoRouter</code>（选它即由 judge 打分选目标）；<code>router off/status</code> 停用/查看。</p></div>
     <div class="card reveal"><div class="ico">👁️</div><h4>视觉 + 工具调用</h4><p><code>run --image</code>（可重复）传图提问；<code>--tools FILE</code> / REPL <code>/tools</code> 加载 OpenAI 风格工具。</p></div>
     <div class="card reveal"><div class="ico">🤖</div><h4>launch 本地 Agent</h4><p><code>nvllm launch claude</code> 等 6 种编码 Agent 直接跑在本地模型上（Claude Code 已 E2E 验证）。</p></div>
     <div class="card reveal"><div class="ico">⚡</div><h4>多模型并发驻留</h4><p><code>--max-models</code> 并发常驻；过期优先、LRU 腾位；<code>inflight</code> 保护在途请求（含流式期间）不被回收。</p></div>
@@ -463,8 +463,8 @@ meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5
 <span class="o">unloaded 'meta-llama/Llama-3.1-8B-Instruct-NVFP4'</span>
 
 <span class="p">$</span> <span>nvllm version</span>
-<span class="o">nvllm 0.5.0</span>
-<span class="o">server  nvllm-serve 0.5.0 @ http://127.0.0.1:8004</span></pre>
+<span class="o">nvllm 0.6.0</span>
+<span class="o">server  nvllm-serve 0.6.0 @ http://127.0.0.1:8004</span></pre>
   </div>
 </section>
 
@@ -511,16 +511,20 @@ meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5
 <span class="o"> "usage": {"input_tokens": 19, "output_tokens": 41}}</span></pre>
   </div>
 
-  <h3>Router：决策模型（System One）替你挑模型</h3>
-  <p class="lede">0.5.0 起，judge 不再是普通 LLM 出自由文本，而是一个<b>常驻决策模型</b>：把候选当选项（A/B/C…）打分，读它对各选项的<b>概率分布</b>取 argmax。默认走 vLLM+logprob，也可 <code>--router-backend transformers</code> 进程内一次前向读出。judge 常驻、不计入 <code>--max-models</code>、永不被驱逐。</p>
+  <h3>Router：可选激活 + AutoRouter（0.6.0）</h3>
+  <p class="lede">路由不再是启动时记一个旗标，而是<b>一条命令激活的能力</b>。<code>nvllm router on</code> 扫缓存里的<b>决策模型（System One）</b>——识别靠厂商中立的 <code>model_router.yaml</code> 标记（<b>不写死任何本地模型名</b>，NvLLM 是通用后端引擎），没有则告知激活失败 + 下载指引；有则列出让你挑 judge，还可选让<b>已加载的本地大模型读元数据推荐一个</b>。激活落盘（<code>router.json</code>），下次 <code>nvllm serve</code> 起 judge <b>常驻</b>、模型列表多出 <code>AutoRouter</code>——选它即由常驻 judge 把候选当选项（A/B/C…）打分、读概率分布取 argmax，选到最合适的本地模型。judge 常驻、不计入 <code>--max-models</code>、永不被驱逐。</p>
   <div class="term">
-    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — model: "auto"</span><button class="copy">复制</button></div>
-    <pre><span class="c"># judge = 决策模型（4B 档信号更清晰）；候选限定到你要路由的几个 LLM</span>
-<span class="p">$</span> <span>nvllm serve --router-judge startlux-models/StartLux-Decision-v1.1-4B-Instant \
-    --router-candidates nvidia/Qwen3-8B-NVFP4,nvidia/Qwen3-14B-NVFP4,nvidia/Qwen3-32B-NVFP4 \
-    --gpu-memory-utilization 0.35</span>
-
-<span class="p">$</span> <span>nvllm route "证明根号2是无理数"     <span class="c"># 干跑：只看决策 + 分布，不消耗后端模型</span></span>
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — nvllm router on / AutoRouter</span><button class="copy">复制</button></div>
+    <pre><span class="p">$</span> <span>nvllm serve                          <span class="c"># 先起服务</span></span>
+<span class="p">$</span> <span>nvllm router on                      <span class="c"># 扫描缓存 → 列出决策模型 → 交互挑 judge</span></span>
+<span class="o">decision models in your HF cache:
+  [1] acme/DecisionLM:main      (base: Qwen3-4B, 4B)
+  R  让 nvidia/Qwen3-32B-NVFP4 读它们的元数据后推荐一个  (R)</span>
+<span class="c"># → 选 R：本地大模型给出推荐评价，再列一次让你确认/改选</span>
+<span class="p">$</span> <span>nvllm router status                  <span class="c"># CONFIGURED：judge + 候选 + 下次 serve 生效</span></span>
+<span class="p">$</span> <span>nvllm serve                          <span class="c"># 重启 → judge 常驻，AutoRouter 出现</span></span>
+<span class="p">$</span> <span>nvllm list                           <span class="c"># 注意多出 AutoRouter</span></span>
+<span class="p">$</span> <span>nvllm route "证明根号2是无理数"      <span class="c"># 干跑：只看决策 + 分布，不消耗后端模型</span></span>
 <span class="o">route -&gt; nvidia/Qwen3-14B-NVFP4:main    (backend: vllm-logprob, judge: …)
   0.3410  ##########  nvidia/Qwen3-14B-NVFP4:main
   0.2827  ########    nvidia/Qwen3-32B-NVFP4:main
@@ -528,10 +532,10 @@ meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5
   0.1107  ##          nvidia/Qwen3-8B-NVFP4:main</span>
 
 <span class="p">$</span> <span>curl -s http://localhost:8004/api/chat -d '{
-  "model": "auto",
+  "model": "AutoRouter",
   "messages": [{"role": "user", "content": "1+1 等于几？"}]
 }'</span>
-<span class="c"># → judge 打分选目标作答；候选白名单（--router-candidates）+ top_logprobs 自动覆盖候选数</span></pre>
+<span class="c"># → 常驻 judge 打分选目标作答（0.5.0 的显式旗标 --router-judge 与隐藏别名 model:"auto" 仍可用，旗标优先于落盘激活）</span></pre>
   </div>
 </section>
 
@@ -651,6 +655,7 @@ meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5
     <div class="item reveal"><span class="m">M11</span> <span class="t">虚拟模型 + 视觉/工具 + 自包含发行</span><span class="d"> — <code>create</code>、<code>--image</code>/<code>--tools</code>、prebuilt-venv tarball、bootstrap 一行安装</span></div>
     <div class="item reveal"><span class="m">M12</span> <span class="t">0.4.0 收尾复盘 + Release</span><span class="d"> — 6 处正确性修复 + 4 处结构统一，143 tests，Release 0.4.0 发布</span></div>
     <div class="item reveal"><span class="m">M13</span> <span class="t">决策模型路由 + MIT + 0.5.0</span><span class="d"> — Router judge 升级为常驻<b>决策模型（System One）</b>：选项打分 + 概率分布（vLLM+logprob / 进程内 one-forward），<code>nvllm route</code> 干跑、<code>/api/route</code> 暴露分布；协议 Apache-2.0 → MIT；158 tests，DGX Spark 实测 0.8B/4B 决策模型</span></div>
+    <div class="item reveal"><span class="m">M14</span> <span class="t">可选激活 + AutoRouter + 推荐 + 0.6.0</span><span class="d"> — <code>nvllm router on</code> 扫缓存找决策模型（<code>model_router.yaml</code> 标记，不写死本地模型名）、交互挑 judge、可选让<b>已加载本地大模型读元数据推荐</b>；激活落盘 <code>router.json</code>，下次 <code>serve</code> judge 常驻、列表多出 <code>AutoRouter</code>；<code>router off/status</code>；新增 <code>POST /api/router</code> + <code>POST /api/router/recommend</code>；0.5.0 显式旗标/隐藏别名 <code>auto</code> 仍兼容（旗标优先）</span></div>
   </div>
   <p class="lede" style="margin-top:6px">
     <b>发行说明：</b>GitHub 单资产上限 2GB，0.4.0 的 ~3.7GB tarball 以两个 <code>&lt;2GB</code> 分卷发布；
@@ -666,10 +671,10 @@ meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5
     <div class="links">
       <a href="https://FaberEli.github.io/NvLLM/">演示报告线上版</a>
       <a href="https://github.com/FaberEli/NvLLM">github.com/FaberEli/NvLLM</a>
-      <a href="https://github.com/FaberEli/NvLLM/releases/tag/0.5.0">Release 0.5.0</a>
+      <a href="https://github.com/FaberEli/NvLLM/releases/tag/0.6.0">Release 0.6.0</a>
       <a href="https://github.com/FaberEli/NvLLM/blob/main/README.md">README</a>
     </div>
-    NvLLM v0.5.0 · MIT · 本页面为单文件（无外部依赖、可离线打开），随仓库版本同步更新。
+    NvLLM v0.6.0 · MIT · 本页面为单文件（无外部依赖、可离线打开），随仓库版本同步更新。
     <div style="margin-top:8px">一行安装：<code>curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash</code></div>
   </div>
 </footer>

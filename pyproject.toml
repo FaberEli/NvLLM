@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nvllm-serve"
-version = "0.5.0"
-description = "Ollama-style resident inference service backed by vLLM (HF-cache model discovery, fixed port, model management, decision-model auto-routing, Ollama-style CLI)"
+version = "0.6.0"
+description = "Ollama-style resident inference service backed by vLLM (HF-cache model discovery, fixed port, model management, opt-in decision-model auto-routing with AutoRouter, Ollama-style CLI)"
 license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,9 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
     "pydantic>=2.7",
+    # parses the decision models' model_router.yaml (read_decision_info). Pure
+    # Python; its absence is tolerated (detection degrades to file-presence).
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

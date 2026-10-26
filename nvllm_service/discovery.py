@@ -18,7 +18,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .catalog import Capability, ModelInfo
+from .catalog import Capability, ModelInfo, is_decision_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -222,6 +222,7 @@ def _scan_one(model_dir: Path, hub_root: Path) -> list[ModelInfo]:
             capabilities=caps,
             supported=unsupported is None,
             note=unsupported or "",
+            is_decision_model=is_decision_snapshot(snapshot),
         )
         results.append(info)
     return results

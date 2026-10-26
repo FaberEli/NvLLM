@@ -134,6 +134,7 @@ Usage:
   nvllm run MODEL [PROMPT]    chat with a model — one-shot, or an interactive REPL
   nvllm create NAME --from MODEL [--system "..."]   virtual model over a cache model
   nvllm rm NAME               delete a created (virtual) model (cache models are never deleted)
+  nvllm router on|off|status  activate/deactivate auto-routing (resident decision-model judge -> AutoRouter)
   nvllm route TEXT            preview which model 'auto' would route to (dry-run; runs only the judge)
   nvllm launch [AGENT] [EXTRA]  start an agent CLI (claude/codex/…) on the local service
   nvllm ps                    show loaded (resident) models
@@ -152,12 +153,14 @@ Launching agents: `nvllm launch claude -p "hello"` runs Claude Code against the
 local models (Anthropic API served at /v1/messages); codex/qwen/gemini/opencode/
 aider go through the OpenAI API at /v1. See `nvllm launch --list`.
 
-Routing: with a judge configured (`nvllm serve --router-judge <decision-model>`),
-any request can use model "auto" and the server picks the best model for it.
-The judge is a resident decision model; by default it is served via vLLM and its
-choice is read from the logprob distribution over the candidates (a faster,
-in-process HuggingFace readout is available via --router-backend transformers).
-Preview a decision without consuming a backend model: `nvllm route "your text"`.
+Routing (opt-in): `nvllm router on` scans the cache for "System One" decision
+models, lets you pick the judge (optionally asking a running local model to
+recommend one), and persists the choice — on the next `nvllm serve` the judge is
+resident and a new model option "AutoRouter" appears; send model "AutoRouter" (or
+"auto") and the judge picks the best local model for the request. `nvllm router
+status` / `off` show/clear it. (A judge can also be set per-run with
+`--router-judge`; the default backend is vLLM + logprob scoring.) Preview a
+decision without consuming a backend model: `nvllm route "your text"`.
 
 Environment: NVLLM_SERVER — server URL (default {client.DEFAULT_URL})
 """
@@ -209,6 +212,15 @@ def _build_parser() -> argparse.ArgumentParser:
     rt = sub.add_parser("route", help="preview which model 'auto' would route to for a text (dry-run; runs only the judge)")
     rt.add_argument("text", help="the request text to route")
     rt.add_argument("--server", default=None, help="server URL (default $NVLLM_SERVER or http://127.0.0.1:8004)")
+
+    rtr = sub.add_parser("router", help="activate / deactivate / show the auto-routing (a resident decision-model judge)")
+    rtr.add_argument("action", choices=["on", "off", "status"], help="on = activate (interactive judge pick), off = deactivate, status = show")
+    rtr.add_argument("--judge", default=None, metavar="MODEL", help="for `on`: skip the interactive prompt and use this decision model directly")
+    rtr.add_argument("--candidates", default=None, metavar="REPOS", help="for `on`: comma-separated repos to restrict routing to (default: all servable non-decision models)")
+    rtr.add_argument("--backend", default=None, choices=["vllm", "transformers"], help="for `on`: judge backend (default vllm)")
+    rtr.add_argument("--top-logprobs", dest="top_logprobs", type=int, default=None, help="for `on`: option-logprob depth (default 32)")
+    rtr.add_argument("--no-recommend", action="store_true", help="for `on`: skip the 'let a local model recommend' prompt")
+    rtr.add_argument("--server", default=None, help="server URL (default $NVLLM_SERVER or http://127.0.0.1:8004)")
 
     la = sub.add_parser("launch", help="launch an agent CLI (claude/codex/…) wired to the nvllm server")
     la.add_argument("--model", "-m", default=None, help="model to use (default: largest completion-capable model, or $NVLLM_LAUNCH_MODEL)")
@@ -283,6 +295,17 @@ def main(argv: list[str] | None = None) -> int:
             return client.cmd_rm(url, args.name)
         if args.command == "route":
             return client.cmd_route(url, args.text)
+        if args.command == "router":
+            candidates = [c.strip() for c in (args.candidates or "").split(",") if c.strip()]
+            return client.cmd_router(
+                url,
+                args.action,
+                judge=args.judge,
+                candidates=candidates or None,
+                backend=args.backend,
+                top_logprobs=args.top_logprobs,
+                recommend=not args.no_recommend,
+            )
         if args.command == "launch":
             extra = list(args.extra or [])
             if extra and extra[0] == "--":  # argparse's REMAINDER separator

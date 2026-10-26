@@ -4,7 +4,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any
+
+# the on-disk file that marks a snapshot as a "System One decision model"
+# (a small model trained to score options A/B/C and emit a distribution).
+# It is a *file convention*, not a vendor name — so detecting on it stays
+# generic and is never tied to one model family. Both StartLux-Decision and
+# SII-Decision ship it; ordinary chat models do not (they ship lora_config.yaml).
+DECISION_MODEL_YAML = "model_router.yaml"
 
 
 class Capability(str, Enum):
@@ -48,6 +56,10 @@ class ModelInfo:
     capabilities: set[Capability] = field(default_factory=set)
     supported: bool = True
     note: str = ""  # why unsupported, if any
+    # True if this snapshot is a System One *decision model* (ships a
+    # model_router.yaml). Such models are candidates for the Router judge, not
+    # for being routed to as a general chat model.
+    is_decision_model: bool = False
 
     @property
     def name(self) -> str:
@@ -62,6 +74,7 @@ class ModelInfo:
             "families": [self.model_type] if self.model_type else [],
             "parameter_size": _fmt_param_size(self.parameter_count),
             "quantization_level": self.quantization,
+            "decision_model": self.is_decision_model,
         }
         if self.context_length:
             d["context_length"] = self.context_length
@@ -106,3 +119,54 @@ class ModelInfo:
             },
             "modified_at": (self.modified_at or datetime.now(timezone.utc)).isoformat(),
         }
+
+
+def is_decision_snapshot(snapshot_dir: Path | str) -> bool:
+    """A snapshot is a decision model iff it ships ``model_router.yaml``.
+
+    This is the generic, vendor-neutral signal (see ``DECISION_MODEL_YAML``) —
+    it never depends on a specific model name, so it holds for any decision
+    model following that convention and stays a clean negative for ordinary
+    chat/embedding models.
+    """
+    return (Path(snapshot_dir) / DECISION_MODEL_YAML).is_file()
+
+
+def read_decision_info(snapshot_dir: Path | str) -> dict:
+    """Read the routing-relevant fields from a decision model's
+    ``model_router.yaml`` (name / base_model / description / parameter_size).
+
+    Never raises: a missing file, a missing ``pyyaml`` install, or an unparseable
+    file all degrade to a minimal ``{"decision_model": True, ...}`` (or ``{}``
+    when the file is absent) — discovery and the router must not die on an odd
+    checkpoint. ``pyyaml`` is imported lazily so the default path stays free of it.
+    """
+    snap = Path(snapshot_dir)
+    yaml_path = snap / DECISION_MODEL_YAML
+    if not yaml_path.is_file():
+        return {}
+    base = {"decision_model": True, "source": DECISION_MODEL_YAML}
+    try:
+        import yaml  # local: keep pyyaml out of the module import path
+    except ImportError:
+        return base
+    try:
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            doc = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return base
+    if not isinstance(doc, dict):
+        return base
+    # the useful fields live either at the top level or under a ``model_router:``
+    # key (vendors differ); try the nested one first, then the top level.
+    inner = doc.get(DECISION_MODEL_YAML.rstrip(".yaml"))
+    if not isinstance(inner, dict):
+        inner = doc
+    info = {
+        "name": str(inner.get("name") or inner.get("model_name") or ""),
+        "base_model": str(inner.get("base_model") or inner.get("base") or ""),
+        "description": str(inner.get("description") or inner.get("model_description") or ""),
+        "parameter_size": str(inner.get("parameter_size") or ""),
+    }
+    base.update({k: v for k, v in info.items() if v})
+    return base

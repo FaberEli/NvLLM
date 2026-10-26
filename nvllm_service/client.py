@@ -231,6 +231,160 @@ def cmd_route(url: str, text: str) -> int:
     return 0
 
 
+def _router_on_body(judge: str, candidates: list[str] | None, backend: str | None, top_logprobs: int | None) -> dict:
+    body = {"action": "on", "judge": judge}
+    if candidates:
+        body["candidates"] = candidates
+    if backend:
+        body["backend"] = backend
+    if top_logprobs:
+        body["top_logprobs"] = top_logprobs
+    return body
+
+
+def _pick_recommender(url: str) -> tuple[str, bool]:
+    """(recommender name, was_loaded). Prefer a *currently-loaded* completion model
+    that is not a decision model; else the largest completion model in the cache.
+    The recommender must be a real chat model (the judge itself is a decision
+    model and is excluded here)."""
+    tags = _get_json(url, "/api/tags").get("models") or []
+    completion = [
+        m for m in tags
+        if isinstance(m, dict)
+        and "completion" in (m.get("capabilities") or [])
+        and not (m.get("details") or {}).get("decision_model")
+    ]
+    if not completion:
+        return "", False
+    try:
+        loaded = {m.get("name") or m.get("model") for m in _get_json(url, "/api/ps").get("models") or []}
+    except CLIError:
+        loaded = set()
+    for m in sorted(completion, key=lambda m: m.get("size") or 0, reverse=True):
+        if m.get("name") in loaded:
+            return str(m["name"]), True
+    biggest = max(completion, key=lambda m: m.get("size") or 0)
+    return str(biggest.get("name")), False
+
+
+def cmd_router(
+    url: str,
+    action: str,
+    *,
+    judge: str | None = None,
+    candidates: list[str] | None = None,
+    backend: str | None = None,
+    top_logprobs: int | None = None,
+    recommend: bool = True,
+    in_fn=None,
+    out_fn=None,
+) -> int:
+    """``nvllm router on|off|status`` — activate / deactivate / show auto-routing.
+
+    ``on`` scans the cache for decision models, lets you pick the judge (and, if
+    you like, asks a running local model to recommend one), and persists the choice;
+    it takes effect on the next ``nvllm serve`` (the judge becomes resident and an
+    ``AutoRouter`` option appears). ``in_fn``/``out_fn`` are injectable for tests.
+    """
+    in_fn = in_fn or input
+    out_fn = out_fn or print
+    require_server(url)
+
+    if action == "status":
+        info = _get_json(url, "/api/router")
+        if info.get("enabled"):
+            out_fn(f"router: ACTIVE     (judge: {info.get('judge')}, backend: {info.get('backend')})")
+        elif info.get("configured"):
+            out_fn(f"router: CONFIGURED (judge: {info.get('judge')}) — active on the next `nvllm serve`")
+        else:
+            out_fn("router: not activated (run `nvllm router on`)")
+        if info.get("enabled") or info.get("configured"):
+            cands = info.get("candidates") or []
+            out_fn(f"  candidates: {', '.join(cands) if cands else 'all servable non-decision models'}")
+        dms = info.get("decision_models") or []
+        if dms:
+            out_fn(f"decision models in cache ({len(dms)}):")
+            for i, d in enumerate(dms, 1):
+                size = f" [{d['parameter_size']}]" if d.get("parameter_size") else ""
+                desc = f" — {d['description']}" if d.get("description") else ""
+                out_fn(f"  {i}. {d['name']}{size}{desc}")
+        else:
+            out_fn("decision models in cache: none (download one with `hf download <org>/<decision-model>`)")
+        return 0
+
+    if action == "off":
+        _post_json(url, "/api/router", {"action": "off"})
+        out_fn("router deactivated — takes effect on the next `nvllm serve`")
+        return 0
+
+    if action != "on":
+        raise CLIError(f"unknown router action '{action}' (expected on/off/status)")
+
+    # --- on ----------------------------------------------------------------
+    info = _get_json(url, "/api/router")
+    dms = [d for d in (info.get("decision_models") or []) if d.get("name")]
+
+    # non-interactive: --judge given directly
+    if judge:
+        body = _post_json(url, "/api/router", _router_on_body(judge, candidates, backend, top_logprobs))
+        out_fn(f"router activated (judge: {body.get('judge')})")
+        out_fn(f"  {body.get('note') or 'the judge becomes resident; AutoRouter appears on the next `nvllm serve`'}")
+        return 0
+
+    if not dms:
+        out_fn("could not activate the router: no System One decision models found in the cache.")
+        out_fn("  NvLLM detects them by the `model_router.yaml` file a decision model ships.")
+        out_fn("  Download one, then retry `nvllm router on`:")
+        out_fn("    pip install -U 'huggingface_hub[cli]'")
+        out_fn("    hf download <org>/<decision-model>      # e.g. a StartLux / SII / Intern decision model")
+        return 1
+
+    def _list() -> None:
+        out_fn("Choose the decision model to act as the router judge:")
+        for i, d in enumerate(dms, 1):
+            size = f" [{d['parameter_size']}]" if d.get("parameter_size") else ""
+            desc = f" — {d['description']}" if d.get("description") else ""
+            out_fn(f"  {i}. {d['name']}{size}{desc}")
+
+    recommender, was_loaded = ("", False)
+    if recommend:
+        try:
+            recommender, was_loaded = _pick_recommender(url)
+        except CLIError:
+            recommender = ""
+
+    _list()
+    if recommender:
+        tag = "currently loaded" if was_loaded else "largest local model"
+        out_fn(f"  R. let {recommender} ({tag}) recommend one")
+
+    while True:
+        try:
+            choice = in_fn("select: ").strip()
+        except (EOFError, StopIteration):
+            raise CLIError("aborted — no selection made")
+        if recommender and choice.lower() in ("r", "recommend"):
+            body = _post_json(url, "/api/router/recommend", {"recommender": recommender, "decision_models": dms})
+            rec_text = (body.get("recommendation") or "").strip()
+            out_fn(f"\n{recommender} says:")
+            for line in (rec_text.splitlines() or ["  (no recommendation text)"]):
+                out_fn(f"    {line}")
+            if body.get("suggested"):
+                out_fn(f"  → it suggests: {body['suggested']}")
+            _list()
+            out_fn(f"  R. ask {recommender} again")
+            continue
+        if choice.isdigit():
+            n = int(choice)
+            if 1 <= n <= len(dms):
+                chosen = dms[n - 1]["name"]
+                body = _post_json(url, "/api/router", _router_on_body(chosen, candidates, backend, top_logprobs))
+                out_fn(f"router activated (judge: {body.get('judge')})")
+                out_fn(f"  {body.get('note') or 'the judge becomes resident; AutoRouter appears on the next `nvllm serve`'}")
+                return 0
+        out_fn(f"  enter a number 1-{len(dms)}" + (" or R for a recommendation" if recommender else ""))
+
+
 def cmd_version(url: str) -> int:
     print(f"nvllm {__version__}")
     try:

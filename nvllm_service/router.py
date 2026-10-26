@@ -38,6 +38,12 @@ log = logging.getLogger(__name__)
 
 # model name that triggers routing, e.g. {"model": "auto"}
 ROUTE_ALIAS = "auto"
+# the *visible* model option shown in the model list once the router is
+# activated (0.6.0); selecting it routes. ``ROUTE_ALIAS`` ("auto") is kept as a
+# hidden back-compat alias so 0.5.0 configs keep working.
+AUTOROUTER_NAME = "AutoRouter"
+# both names trigger routing when the router is active
+ROUTE_TRIGGERS = (ROUTE_ALIAS, AUTOROUTER_NAME)
 
 # backend names (keep in sync with Settings.router_backend)
 BACKEND_VLLM = "vllm"

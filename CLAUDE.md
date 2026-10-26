@@ -5,7 +5,7 @@ user-facing doc; this file is for working on the code.
 
 ## Running
 
-- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (158 tests)
+- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (182 tests)
 - Dev server (default bind `0.0.0.0:8004`): `nvllm serve` or
   `.venv/bin/python -m nvllm_service serve --hf-hub-root <cache>`
 - **Single entry (0.3.0, breaking):** `nvllm` (= `nvllm_service.cli:main`) and
@@ -32,8 +32,17 @@ user-facing doc; this file is for working on the code.
 
 - `discovery.py` — scan HF hub cache → `list[ModelInfo]`; `by_name()` resolves
   `org/name[:tag]` and bare names. Tag-less means `'latest'` and prefers a
-  `main`/`latest` ref (HF caches usually only have `main`).
+  `main`/`latest` ref (HF caches usually only have `main`). Sets
+  `ModelInfo.is_decision_model` from the snapshot (`is_decision_snapshot`).
 - `catalog.py` — `ModelInfo`, `Capability` (completion / embedding / tools).
+  **Decision models (0.6.0):** `ModelInfo.is_decision_model` (bool); detected by
+  the vendor-neutral marker `DECISION_MODEL_YAML = "model_router.yaml"` at the
+  snapshot root (`is_decision_snapshot(dir)` → presence check; `read_decision_info(dir)`
+  → parses the yaml's `name`/`base_model`/`description`/`parameter_size`, tolerating
+  the StartLux `{model_router: {…}}` and SII flat shapes, and degrading to
+  file-presence if `pyyaml` is absent or the file is unparseable). **Do NOT
+  hardcode local model names** — the marker is the only signal (NvLLM is a
+  general-purpose engine; NVFP4/DGX Spark is one optimization focus, not a cap).
 - `config.py` — `Settings` dataclass. `hf_hub_root` is a **field** (`Path|None`);
   `hub_root()` is the **method** that applies the default.
   ⚠️ **Call `hub_root()`, not `hf_hub_root()`** — the field is a `Path` (or
@@ -48,6 +57,13 @@ user-facing doc; this file is for working on the code.
   write; `list/get/names/create/delete`). Pure stdlib, independently testable.
   A created model is **metadata only** — it resolves to the base catalog model
   (shares its worker); the wrapper is injected per request in `main.py`.
+- `router_config.py` — **Router activation state (0.6.0):** `RouterConfig`
+  (frozen dataclass: `enabled, judge, candidates, backend, top_logprobs,
+  activated_at`; `to_api()`) + `RouterConfigStore` (`state_dir()/router.json`,
+  atomic tmp+rename write — same pattern as `CreatedStore`; `load()` returns
+  `None` for absent/corrupt/`enabled:false`, `save(cfg)` validates judge +
+  backend, `clear()` removes the file; static `activate(...)` helper). Pure
+  stdlib, independently testable.
 - `workers.py` — `WorkerManager`: one `vllm serve` subprocess per model.
   `_vllm_bin()` resolves the worker binary (next to the running interpreter, else
   `PATH`). Up to `settings.max_models` non-judge models resident at once (default
@@ -69,16 +85,32 @@ user-facing doc; this file is for working on the code.
   demo panel; the service is an unauthenticated LAN tool — see README "Security").
   `_resolve_model(body)` resolves the request's model — **registered aliases**
   (`app.state.model_aliases`, set via `POST /v1/aliases`) are mapped back to the
-  real catalog model first, then the `"auto"` alias triggers the Router (if
-  `--router-judge` is set) via the `_route(text)` helper — which dispatches on
+  real catalog model first, then a routing trigger name (`ROUTE_TRIGGERS` =
+  `"auto"` hidden alias or `"AutoRouter"` — see `router.py`) triggers the Router
+  via the `_route(text)` helper — which dispatches on
   `router.backend`: `"vllm"` (default) does `ensure(judge, keep_alive=-1)` then
   `router.decide(...)`; `"transformers"` calls `app.state.transformer_judge.decide(...)`
   (created in `create_app` only for that backend, so the `vllm` path never imports
   it). `RouterDecision` is returned; `_resolve_model` uses `.chosen`. `POST /api/route`
   is the dry-run (runs only the judge, never the backend model) and returns the
-  decision + distribution; `GET /api/router` reports `backend`/judge/candidates.
-  All inference endpoints share this one resolution path. Endpoints then `ensure()`
-  a worker and delegate to `forward`.
+  decision + distribution. All inference endpoints share this one resolution path.
+  Endpoints then `ensure()` a worker and delegate to `forward`.
+  **Router activation (0.6.0):** `app.state.router_config = RouterConfigStore(...)`.
+  `create_app` resolves the router config with precedence **explicit
+  `settings.router_judge` (0.5.0 flag) > persisted activation (`enabled`) > off**;
+  candidates exclude every `is_decision_model` model (a judge is not a general
+  chat target). `GET /api/router` reports `enabled` (live), `configured`
+  (persisted or live), alias/autorouter, backend/judge/candidates, and
+  `decision_models` (from `read_decision_info`). `POST /api/router` (`on`
+  validates the judge — 404 unknown / 400 unservable / 400 if no non-judge
+  target — then `save`; `off` clears). `POST /api/router/recommend` runs an
+  already-loaded recommender model over the decision-models' metadata and returns
+  `{recommender, recommendation, suggested}`. `_autorouter_entry_ollama()`
+  injects the **`AutoRouter`** virtual option into `/api/tags` + `/v1/models` +
+  `/api/show` (only when a router is active; `find_model` never matches it — it
+  is handled in the routing branch only). ⚠️ closure note: activation is
+  "next `serve`" (router built once in `create_app`), so `_route`/`ensure`
+  capture the router by closure var without needing runtime re-binding.
   **Virtual models (0.4.0):** `app.state.created = CreatedStore(...)`;
   `_resolve_with_spec(body)` = alias/auto resolution + created-model check
   (virtual name → rewrite `body["model"]` to the base; returns the
@@ -107,7 +139,10 @@ user-facing doc; this file is for working on the code.
   name-based `parse_choice()`) → `fallback()` (largest). Returns a
   `RouterDecision` (chosen + distribution + backend + raw). `option_symbol(i)`
   maps index→letter (A…Z, a…z, 0…). `top_logprobs` auto-grows to cover the
-  candidate count. `ROUTE_ALIAS` = `"auto"`. **`softmax_topk(pairs)`** is the
+  candidate count. `ROUTE_ALIAS` = `"auto"` (hidden back-compat); **`AUTOROUTER_NAME`
+  = `"AutoRouter"`** (0.6.0, the visible option) and `ROUTE_TRIGGERS =
+  (ROUTE_ALIAS, AUTOROUTER_NAME)` — both trigger routing in `main.py`.
+  **`softmax_topk(pairs)`** is the
   shared pure scoring core (numerically-stable softmax over a subset of
   log-scale values → `(argmax_index, probs)`): used by `score_logprobs` (vLLM
   logprobs) *and* `transformer_router._decide_sync` (raw logits), and unit-tested
@@ -128,10 +163,21 @@ user-facing doc; this file is for working on the code.
   [--num-predict …]` and `rm NAME` (rm on a non-created model still prints the
   HF-cache-delete guidance, via the server 404). **0.5.0:** `route TEXT`
   (dry-run routing preview → `client.cmd_route` → `POST /api/route`); `serve`
-  gains `--router-backend` and `--router-top-logprobs`.
+  gains `--router-backend` and `--router-top-logprobs`. **0.6.0:** `router
+  on|off|status` (activate/deactivate/inspect the decision-model Router →
+  `client.cmd_router`; `on` takes `--judge` / `--candidates` / `--backend` /
+  `--top-logprobs` / `--no-recommend`, mirroring the serve flags and persisting
+  to `router.json`; `status` distinguishes ACTIVE / CONFIGURED / not-activated).
 - `client.py` — the Ollama-style client commands (list/ps/show/run/stop/version/
-  create/rm/route). Synchronous `httpx` (CLI is a foreground process; no event loop).
+  create/rm/route/router). Synchronous `httpx` (CLI is a foreground process; no event loop).
   `repl()` takes injectable `in_fn`/`out_fn` so tests script the whole session.
+  **0.6.0:** `cmd_router(url, action, *, judge, candidates, backend, top_logprobs,
+  recommend, in_fn, out_fn)` — `status`/`off` are simple GET/POST; `on` does
+  `GET /api/router` (empty `decision_models` → report activation failed +
+  `hf download` guidance → rc 1), else a numbered pick (+ optional `R` recommend
+  step: `_pick_recommender(url)` = loaded non-decision completion model, else the
+  largest servable chat model; `POST /api/router/recommend`) then
+  `POST /api/router {on}`. `_router_on_body(...)` builds the payload.
   0.4.0 additions: `run_prompt(…, images, tools)` (image files → base64 `images`
   on the last user message; `⚙ tool: name(args)` printed from streamed
   tool_calls) and REPL image-path turns + `/tools <file>` (⚠️ the image-path
@@ -143,7 +189,9 @@ user-facing doc; this file is for working on the code.
   `<alias>` placeholders) + shared exec path. Adding an agent = one `Agent(...)` entry.
   `launch_config()` is the testable seam (no exec); `cmd_launch` does require_server
   → model default (largest completion model / `--model` / `$NVLLM_LAUNCH_MODEL`) →
-  foreground `subprocess.call` with stdio inherited.
+  foreground `subprocess.call` with stdio inherited. ⚠️ `pick_default_model`
+  **skips decision models** (`details.decision_model`) — a judge is not a general
+  chat target, so it is never the default launch model.
   ⚠️ **Claude Code model-name gate (verified on the native 2026 build):**
   `ANTHROPIC_MODEL` env / `--model` flag are validated against a known-claude
   whitelist (rejected locally, **zero requests sent**); but the `model` key in a

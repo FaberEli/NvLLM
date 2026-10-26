@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -16,11 +17,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from . import __version__, anthropic, forward
-from .catalog import Capability, ModelInfo
+from .catalog import Capability, ModelInfo, read_decision_info
 from .config import Settings
 from .created import CreatedModel, CreatedStore
 from .discovery import by_name, discover
-from .router import ROUTE_ALIAS, Router, RouterDecision
+from .router import AUTOROUTER_NAME, ROUTE_ALIAS, ROUTE_TRIGGERS, Router, RouterDecision
+from .router_config import RouterConfig, RouterConfigStore
 from .workers import Worker, WorkerManager
 
 log = logging.getLogger(__name__)
@@ -61,23 +63,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # in the state dir so they survive restarts.
     app.state.created = CreatedStore(settings.state_dir() / "created.json")
 
-    # M3 (M13): Router — only active when a judge model is configured. The judge
-    # is a decision model (or any LLM); backend "vllm" (default) scores the choice
-    # from the judge's logprobs, "transformers" reads it in-process.
+    # ---- Router (opt-in activation, 0.6.0) -------------------------------
+    # The router is a resident capability the user activates once (`nvllm router on`):
+    # the choice is persisted in ``router.json`` and read here at startup, so the
+    # judge *decision model* becomes resident and the ``AutoRouter`` option appears
+    # in the model list. An explicit ``--router-judge`` CLI/env flag still wins
+    # (0.5.0 back-compat); the persisted store is the default source.
+    app.state.router_config = RouterConfigStore(settings.state_dir() / "router.json")
+    router_cfg: RouterConfig | None
+    if settings.router_judge:  # explicit flag/env beats the persisted activation
+        router_cfg = RouterConfig(
+            enabled=True,
+            judge=settings.router_judge,
+            candidates=list(settings.router_candidates),
+            backend=settings.router_backend,
+            top_logprobs=settings.router_top_logprobs,
+        )
+    else:
+        router_cfg = app.state.router_config.load()
+
     router: Router | None = None
-    if settings.router_judge:
-        judge = by_name(catalog, settings.router_judge)
+    if router_cfg is not None and router_cfg.enabled and router_cfg.judge:
+        judge = by_name(catalog, router_cfg.judge)
         if judge is None or not judge.supported:
-            raise RuntimeError(f"router judge '{settings.router_judge}' is not a servable catalog model")
-        candidates = [m for m in catalog if m.supported]
-        if settings.router_candidates:
-            wanted = set(settings.router_candidates)
+            raise RuntimeError(
+                f"router judge '{router_cfg.judge}' is not a servable catalog model — "
+                "run `nvllm router off` to deactivate, or point it at a cached model"
+            )
+        # routing targets = servable models, minus decision models (they are judges,
+        # not general chat targets) and minus the judge itself (Router excludes it).
+        candidates = [m for m in catalog if m.supported and not m.is_decision_model]
+        if router_cfg.candidates:
+            wanted = set(router_cfg.candidates)
             candidates = [m for m in candidates if m.repo in wanted]
         router = Router(
             judge=judge,
             candidates=candidates,
-            backend=settings.router_backend,
-            top_logprobs=settings.router_top_logprobs,
+            backend=router_cfg.backend,
+            top_logprobs=router_cfg.top_logprobs,
         )
         log.info("router enabled: judge=%s, backend=%s, %d candidate(s)", judge.name, router.backend, len(router.candidates))
     app.state.router = router
@@ -156,7 +179,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if router is None:
             raise HTTPException(
                 status_code=400,
-                detail="routing not configured; set --router-judge to enable model='auto'",
+                detail="routing not configured — activate it with `nvllm router on`, "
+                "or start the service with `--router-judge <model>`",
             )
         if router.backend == "transformers":
             return await app.state.transformer_judge.decide(request_text)
@@ -167,17 +191,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Resolve the request's model.
 
         Registered aliases (POST /v1/aliases, e.g. Claude Code's gated
-        'claude-*' name) are mapped back to the real catalog model first;
-        the 'auto' alias then triggers the Router (if enabled).
+        'claude-*' name) are mapped back to the real catalog model first; the
+        router triggers — ``AutoRouter`` (the visible option) or the hidden
+        ``auto`` alias (0.5.0 back-compat) — then route through the judge.
         """
         name = str(body.get("model") or body.get("name") or "")
         target = app.state.model_aliases.get(name)
         if target:
             body["model"] = target
             name = target
-        if name == ROUTE_ALIAS:
+        if name in ROUTE_TRIGGERS:
             decision = await _route(_request_text(body))
-            log.info("routed 'auto' -> %s (via %s, dist=%s)", decision.chosen.name, decision.backend, decision.distribution)
+            log.info("routed '%s' -> %s (via %s, dist=%s)", name, decision.chosen.name, decision.backend, decision.distribution)
             return decision.chosen
         return find_model(name)
 
@@ -283,9 +308,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return out
 
+    def _autorouter_entry_ollama() -> dict[str, Any] | None:
+        """The visible ``AutoRouter`` option — present only while the router is
+        active. It is a built-in virtual option (like a created model) that, when
+        selected, routes the request through the resident decision-model judge."""
+        if app.state.router is None:
+            return None
+        judge = app.state.router.judge
+        return {
+            "name": AUTOROUTER_NAME,
+            "model": AUTOROUTER_NAME,
+            "modified_at": datetime.now(timezone.utc).isoformat(),
+            "size": 0,
+            "digest": "",
+            "details": {"format": "router", "judge": judge.name, "decision_model": True},
+            "capabilities": [Capability.COMPLETION.value],
+        }
+
     @app.get("/api/tags")
     async def api_tags() -> dict[str, Any]:
-        return {"models": [m.to_ollama_list() for m in catalog] + _created_entries_ollama()}
+        models = [m.to_ollama_list() for m in catalog] + _created_entries_ollama()
+        ar = _autorouter_entry_ollama()
+        if ar is not None:
+            models.append(ar)
+        return {"models": models}
 
     @app.get("/api/ps")
     async def api_ps() -> dict[str, Any]:
@@ -298,6 +344,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not name:
             raise HTTPException(status_code=400, detail='"model" is required')
         name = str(name)
+        if name == AUTOROUTER_NAME:
+            if app.state.router is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"model '{AUTOROUTER_NAME}' not found — router not activated (run `nvllm router on`)",
+                )
+            judge = app.state.router.judge
+            return {
+                "name": AUTOROUTER_NAME,
+                "details": {"format": "router", "judge": judge.name, "decision_model": True},
+                "capabilities": [Capability.COMPLETION.value],
+                "system": "AutoRouter routes each request to the best local model, chosen by a resident decision-model judge.",
+            }
         cm = _created(name)
         if cm is not None:
             base = find_model(cm.base)
@@ -378,15 +437,151 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/router")
     async def api_router() -> dict[str, Any]:
-        if router is None:
-            return {"enabled": False, "alias": ROUTE_ALIAS}
+        """Router status + the decision models found in the cache (for `nvllm router on`)."""
+        decision_models = []
+        for m in catalog:
+            if m.is_decision_model:
+                info = read_decision_info(m.snapshot_dir)
+                decision_models.append(
+                    {
+                        "name": m.name,
+                        "supported": m.supported,
+                        "base_model": info.get("base_model") or m.model_type or "",
+                        "description": info.get("description") or "",
+                        "parameter_size": info.get("parameter_size") or "",
+                        "source": info.get("source") or "model_router.yaml",
+                    }
+                )
+        # report both the LIVE router (built this session) and the PERSISTED
+        # activation (router.json — active from the next `nvllm serve` onward).
+        persisted = app.state.router_config.load()
+        out: dict[str, Any] = {
+            "enabled": router is not None,
+            "configured": persisted is not None or router is not None,
+            "alias": ROUTE_ALIAS,
+            "autorouter": AUTOROUTER_NAME,
+            "decision_models": decision_models,
+        }
+        if router is not None:
+            out.update(
+                {
+                    "backend": router.backend,
+                    "judge": router.judge.name,
+                    "candidates": [m.name for m in router.candidates],
+                }
+            )
+        elif persisted is not None:
+            out.update(
+                {
+                    "judge": persisted.judge,
+                    "backend": persisted.backend,
+                    "candidates": persisted.candidates,
+                    "note": "configured — active on the next `nvllm serve`",
+                }
+            )
+        return out
+
+    @app.post("/api/router")
+    async def api_router_set(request: Request) -> dict[str, Any]:
+        """Activate / deactivate the router (persisted to ``router.json``).
+
+        Body: ``{"action":"on","judge":"<catalog name>","candidates":[...],
+        "backend":"vllm","top_logprobs":32}`` or ``{"action":"off"}``.
+        Takes effect on the next ``nvllm serve`` startup (the judge then becomes
+        resident and ``AutoRouter`` appears in the model list).
+        """
+        body = await _json_body(request)
+        action = str(body.get("action") or "").strip().lower()
+        if action == "off":
+            app.state.router_config.clear()
+            return {"enabled": False, "note": "router deactivated — takes effect on the next `nvllm serve`"}
+        if action != "on":
+            raise HTTPException(status_code=400, detail="'action' must be 'on' or 'off'")
+        judge_name = str(body.get("judge") or "").strip()
+        if not judge_name:
+            raise HTTPException(status_code=400, detail="'judge' is required (a decision model from the cache)")
+        judge = by_name(catalog, judge_name)
+        if judge is None:
+            raise HTTPException(status_code=404, detail=f"model '{judge_name}' not found in the cache")
+        if not judge.supported:
+            raise HTTPException(status_code=400, detail=f"judge '{judge.name}' is not servable: {judge.note}")
+        candidates = [c for c in (body.get("candidates") or []) if isinstance(c, str) and c.strip()]
+        # there must be at least one non-decision model to route to (judges aren't chat targets)
+        targets = [m for m in catalog if m.supported and not m.is_decision_model and m.name != judge.name]
+        if candidates:
+            wanted = set(candidates)
+            targets = [m for m in targets if m.repo in wanted]
+        if not targets:
+            raise HTTPException(status_code=400, detail="no routing targets — need at least one servable non-decision model to route to")
+        backend = str(body.get("backend") or "vllm")
+        top_logprobs = int(body.get("top_logprobs") or 32)
+        cfg = RouterConfigStore.activate(judge.name, candidates, backend=backend, top_logprobs=top_logprobs)
+        app.state.router_config.save(cfg)
+        log.info("router activated: judge=%s, backend=%s, %d candidate(s)", judge.name, backend, len(candidates))
         return {
             "enabled": True,
-            "alias": ROUTE_ALIAS,
-            "backend": router.backend,
-            "judge": router.judge.name,
-            "candidates": [m.name for m in router.candidates],
+            "judge": judge.name,
+            "backend": backend,
+            "candidates": candidates,
+            "top_logprobs": top_logprobs,
+            "note": "router activated — the judge becomes resident and AutoRouter appears on the next `nvllm serve`",
         }
+
+    def _match_suggested(text: str, dms: list) -> str:
+        """Best-effort: which decision-model name appears in a recommendation text."""
+        if not text:
+            return ""
+        low = text.lower()
+        best, best_len = "", 0
+        for d in dms:
+            if not isinstance(d, dict):
+                continue
+            name = str(d.get("name") or "")
+            for key in (name, name.split("/", 1)[-1]):
+                if key and key.lower() in low and len(key) > best_len:
+                    best, best_len = name, len(key)
+        return best
+
+    @app.post("/api/router/recommend")
+    async def api_router_recommend(request: Request) -> dict[str, Any]:
+        """Ask an already-loaded local chat model to recommend a decision model.
+
+        Body: ``{"recommender":"<catalog name>", "decision_models":[{name,description,base_model,...}]}``.
+        Runs the recommender once (non-streaming) and returns its recommendation
+        plus a best-effort ``suggested`` decision-model name parsed from it.
+        """
+        body = await _json_body(request)
+        recommender_name = str(body.get("recommender") or "").strip()
+        if not recommender_name:
+            raise HTTPException(status_code=400, detail="'recommender' is required")
+        rec = by_name(catalog, recommender_name)
+        if rec is None:
+            raise HTTPException(status_code=404, detail=f"recommender '{recommender_name}' not found")
+        if not rec.supported or Capability.COMPLETION not in rec.capabilities:
+            raise HTTPException(status_code=400, detail=f"recommender '{rec.name}' is not a servable chat model")
+        dms = [d for d in (body.get("decision_models") or []) if isinstance(d, dict)]
+        if not dms:
+            raise HTTPException(status_code=400, detail="need at least one decision model to evaluate")
+        listing = "\n".join(
+            f"- {d.get('name')}: {d.get('description') or '(no description)'} "
+            f"(base {d.get('base_model') or '?'}, {d.get('parameter_size') or '?'})"
+            for d in dms
+        )
+        prompt = (
+            "I am choosing a 'System One' decision model to act as a router judge that picks "
+            "the best local model for each request. Based only on the info below, recommend the "
+            "single best decision model for this role and justify it in 1-2 sentences. "
+            "Start your reply with the recommended model's name.\n\nDecision models:\n" + listing
+        )
+        worker = await ensure(rec, forward.parse_keep_alive(None))
+        async with manager.track(worker):
+            resp = await forward.forward_json(
+                worker,
+                "/v1/chat/completions",
+                {"model": rec.name, "messages": [{"role": "user", "content": prompt}], "max_tokens": 200, "temperature": 0},
+            )
+        content = ((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        return {"recommender": rec.name, "recommendation": content, "suggested": _match_suggested(content, dms)}
 
     @app.post("/api/route")
     async def api_route(request: Request) -> dict[str, Any]:
@@ -482,6 +677,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             {"id": cm.name, "object": "model", "created": 0, "owned_by": "nvllm"}
             for cm in app.state.created.list()
         ]
+        if app.state.router is not None:  # AutoRouter appears only when the router is active
+            data.append({"id": AUTOROUTER_NAME, "object": "model", "created": 0, "owned_by": "nvllm"})
         return {"object": "list", "data": data}
 
     @app.post("/v1/chat/completions")

@@ -12,12 +12,21 @@ inference engine: one `nvllm` CLI, a resident model service, and local agents
 > params — metadata only, weights untouched), image & tool-call UX in `run`/REPL,
 > and a self-contained one-line install (tarball bundles python + vLLM + nvllm).
 >
-> **0.5.0 (this release):** the Router judge is now a **decision model** (System
+> **0.5.0:** the Router judge is now a **decision model** (System
 > One) — a small, always-resident model that picks the best backend model by
 > *scoring the candidate options*, not by free text. Two judge backends
 > (default: vLLM + logprob scoring; optional: in-process HuggingFace
 > one-forward-pass readout), a `nvllm route` dry-run, and the license moves
 > **Apache-2.0 → MIT**.
+>
+> **0.6.0 (this release):** routing is now an **opt-in, activatable
+> capability**. `nvllm router on` scans your model cache for **System One
+> decision models** (detected by a vendor-neutral `model_router.yaml`), lets you
+> pick the judge — with an optional **recommendation** from an already-loaded
+> local model — and persists the choice so that on the next `nvllm serve` the
+> judge runs **resident** and a new **`AutoRouter`** option appears in the model
+> list; selecting it routes each request to the best local model. `nvllm router
+> off` / `nvllm router status` deactivate and inspect it.
 
 Built to serve **NVFP4-quantized** models at full speed on **DGX Spark (GB10)**
 unified memory. It discovers models from your local HuggingFace hub cache,
@@ -50,6 +59,10 @@ nvllm create assistant --from nvidia/Qwen3-8B-NVFP4 \
   --system "你是一个简洁的中文助手" --temperature 0.3    # virtual model (metadata only)
 nvllm rm assistant                   # remove a virtual model
 nvllm route "prove sqrt(2) is irrational"   # preview which model 'auto' would pick (dry-run)
+nvllm router on                            # activate auto-routing: pick a decision-model judge (interactive)
+nvllm router on --judge acme/DecisionLM    # …or name the judge directly (no prompt)
+nvllm router status                        # show activation state + the decision models in cache
+nvllm router off                           # deactivate auto-routing
 nvllm launch claude -p "hello"       # run Claude Code on the local models
 nvllm launch codex exec "say hi"     # run Codex CLI on the local models
 nvllm launch --list                  # supported agents + availability
@@ -144,7 +157,9 @@ include them.
 | `nvllm create NAME --from M` | `ollama create` | **metadata only**: base + system + params (NvLLM never copies weights; Ollama builds a GGUF) |
 | `nvllm pull` | `ollama pull` | **not integrated** — NvLLM never downloads models; it prints guidance (`hf download <org>/<name>`) |
 | `nvllm rm NAME` | `ollama rm` | works for **created** models; for HF-cache models it prints guidance (delete the `models--*` dir) |
-| `model: "auto"` | — | NvLLM-only: the decision-model Router picks the best backend model per request |
+| `nvllm router on\|off\|status` | — | NvLLM-only: **activate / deactivate / inspect** the decision-model Router (pick the judge, optional recommend) |
+| `model: "AutoRouter"` | — | NvLLM-only: the resident decision-model judge routes this request to the best local model (appears once routing is activated) |
+| `model: "auto"` | — | NvLLM-only: hidden back-compat alias that also triggers the Router |
 | `nvllm route TEXT` | — | NvLLM-only: preview the routing decision + distribution (runs only the judge) |
 
 Client commands talk to a running server over HTTP (default
@@ -182,6 +197,47 @@ for — so instead of parsing free text the Router reads the judge's
 That distribution is exposed (see `/api/route` below), so you see the confidence,
 not just the winner.
 
+## Activating the Router (0.6.0, opt-in)
+
+The Router is **off by default** and is a capability you **activate** with a
+command — not a flag you remember at startup. Activation is Ollama-flavored:
+
+```bash
+nvllm router on        # interactive: scan cache for decision models → pick the judge
+nvllm router status    # is it active? which judge? what decision models are in cache?
+nvllm router off       # deactivate
+```
+
+What `nvllm router on` does:
+
+1. **Scans your model cache for *System One* decision models.** A model is
+   recognized as a decision model when its snapshot carries a
+   **`model_router.yaml`** (a vendor-neutral marker — NvLLM does **not** hardcode
+   any local model name). If **none** are found, it reports that activation
+   failed and prints `hf download <org>/<decision-model>` guidance.
+2. **Lists the decision models** you have, numbered, and lets you pick the judge.
+   You can also pass the judge directly to skip the prompt:
+   `nvllm router on --judge acme/DecisionLM`.
+3. **Optional: ask a local model to recommend one.** An extra option (on by
+   default) hands the decision models' metadata to an **already-loaded** local
+   model (falling back to the largest servable chat model), which reads them and
+   returns a recommendation; the list is shown again so you can accept or override
+   it. Disable with `--no-recommend`.
+4. **Persists the choice** (`state_dir()/router.json`). It takes effect on the
+   **next `nvllm serve`** — at that startup the judge becomes a **resident**
+   worker (never evicted) and a new **`AutoRouter`** option appears in
+   `nvllm list`, `/api/tags`, and `/v1/models`. Selecting it routes each request
+   through the resident judge to the best local model:
+
+   ```bash
+   nvllm run AutoRouter "prove that sqrt(2) is irrational"   # judge picks the backend
+   ```
+
+The hidden `model: "auto"` alias still works (0.5.0 back-compat), and the
+`--router-judge` / `--router-candidates` / `--router-backend` /
+`--router-top-logprobs` startup flags still work too — an **explicit startup flag
+wins** over a persisted activation, and an activation wins over the off default.
+
 ### Judge backends
 
 | `--router-backend` | How the judge runs | Notes |
@@ -209,19 +265,33 @@ nvllm route "prove that sqrt(2) is irrational"
 
 ### Setup
 
+**Recommended (0.6.0, opt-in):** activate the Router from the CLI, then restart
+the service so the judge goes resident:
+
+```bash
+nvllm serve                                # start the service
+nvllm router on                            # scan cache → pick the judge (or: --judge …)
+nvllm router status                        # confirm: judge + candidates + decision models
+# restart so the activation takes effect (the judge goes resident, AutoRouter appears):
+nvllm serve
+nvllm list                                 # note the new "AutoRouter" entry
+curl -s localhost:8004/api/router | jq     # enabled + judge + candidates
+nvllm route "what is 2+2?"                 # dry-run preview (runs only the judge)
+curl -s localhost:8004/api/chat -d '{      # real routing via AutoRouter
+  "model": "AutoRouter",
+  "messages": [{"role": "user", "content": "hello"}]
+}'
+```
+
+**Alternative (0.5.0, explicit startup flags):** pass the judge at `serve` time —
+this path wins over a persisted activation:
+
 ```bash
 nvllm serve \
   --router-judge startlux-models/StartLux-Decision-v1.1-4B-Instant \
   --router-candidates "nvidia/Qwen3-8B-NVFP4,nvidia/Qwen3-14B-NVFP4,nvidia/Qwen3-32B-NVFP4,nvidia/Phi-4-reasoning-plus-NVFP4" \
   --router-top-logprobs 10 \
   --gpu-memory-utilization 0.35     # see the DGX Spark note below
-
-curl -s localhost:8004/api/router | jq          # routing status + backend + candidates
-nvllm route "what is 2+2?"                      # dry-run preview
-curl -s localhost:8004/api/chat -d '{            # real routing
-  "model": "auto",
-  "messages": [{"role": "user", "content": "hello"}]
-}'
 ```
 
 > **Practical notes (validated on DGX Spark GB10):**
@@ -323,7 +393,7 @@ Work from the repo with an editable venv instead:
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pip install "vllm==0.31.0"          # the engine (validated baseline)
-python -m pytest -q                 # 158 tests, no GPU needed
+python -m pytest -q                 # 182 tests, no GPU needed
 ```
 
 ## Quickstart
@@ -372,7 +442,12 @@ Precedence: **CLI flag > environment variable > default**.
 | `--router-candidates` | `NVLLM_ROUTER_CANDIDATES` | all supported | comma-separated repos the Router may route to (keep it to the models you route between) |
 | `--router-backend` | `NVLLM_ROUTER_BACKEND` | `vllm` | judge backend: `vllm` (serve + logprob scoring) or `transformers` (in-process one-forward readout) |
 | `--router-top-logprobs` | `NVLLM_ROUTER_TOP_LOGPROBS` | `32` | top-k logprobs to request from the judge for option scoring (≥ number of candidates) |
-| — | `NVLLM_STATE_DIR` | `~/.local/share/nvllm-serve` | state dir: created-models store (`created.json`) + `launch claude` settings.json |
+| — | `NVLLM_STATE_DIR` | `~/.local/share/nvllm-serve` | state dir: created-models store (`created.json`), Router activation (`router.json`), and `launch claude` settings.json |
+
+> The Router activation command `nvllm router on` mirrors these flags —
+> `--judge`, `--candidates`, `--backend {vllm,transformers}`, `--top-logprobs`,
+> plus `--no-recommend` — and stores the choice in `state_dir()/router.json`
+> (an explicit `--router-judge` at `serve` time still wins over it).
 
 Also honored by workers: `NVLLM_MAX_NUM_SEQS`, `NVLLM_TRUST_REMOTE_CODE`,
 `NVLLM_WORKER_MAX_JOBS`, and `NVLLM_WORKER_EXTRA_ARGS` (raw args appended to every
@@ -448,7 +523,10 @@ Workers (the `vllm serve` subprocesses) always bind `127.0.0.1` regardless of
 | POST | `/api/unload` | Ollama — unload a loaded model (`nvllm stop`) |
 | POST | `/api/chat`, `/api/generate` | Ollama — inference (stream + non-stream) |
 | POST | `/api/embed`, `/api/embeddings` | Ollama — embeddings |
-| GET | `/api/router` | routing status (judge + candidates) |
+| GET | `/api/router` | routing status: `enabled` (live) + `configured` (persisted) + judge + candidates + the `decision_models` in cache |
+| POST | `/api/router` | activate (`on`) / deactivate (`off`) the Router — persists to `state_dir()/router.json` |
+| POST | `/api/router/recommend` | have an already-loaded model read the decision models' metadata and recommend a judge |
+| POST | `/api/route` | dry-run: run only the judge, return the choice + distribution (`nvllm route`) |
 | GET | `/v1/models` | OpenAI — list models |
 | POST | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` | OpenAI — inference |
 | POST | `/v1/messages` | Anthropic Messages API — for `nvllm launch claude` & other Anthropic clients (streaming SSE included) |
@@ -461,7 +539,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-The suite (158 tests) uses a fake HF hub cache and a stub OpenAI-compatible
+The suite (182 tests) uses a fake HF hub cache and a stub OpenAI-compatible
 worker (including a logprobs-returning stub for the Router), so it runs without a
 GPU or a real vLLM install — it also runs in CI.
 
@@ -499,9 +577,10 @@ references and are not part of this repo.)
 **What it builds (original):** HF-cache model discovery & capability detection;
 the resident worker supervisor (spawn / health / LRU-evict / in-flight protection);
 the Ollama + OpenAI + Anthropic tri-protocol proxy with streaming translation;
-the **decision-model Router** (System One judge, logprob / one-forward readout,
-`nvllm route` dry-run); `nvllm launch` local agents; and metadata-only virtual
-models.
+the **opt-in decision-model Router** (System One judge, logprob / one-forward
+readout, `nvllm router on` activation + `AutoRouter` option + local-model
+recommendation, `nvllm route` dry-run); `nvllm launch` local agents; and
+metadata-only virtual models.
 
 ## Licensing
 
@@ -554,3 +633,15 @@ use.
   `/api/route` exposing the distribution; deep review pass; **license moved
   Apache-2.0 → MIT**; README documents what NvLLM is / borrows / original / pulls.
   Validated end-to-end on DGX Spark against real 0.8B & 4B decision models. ✅
+- **M14 (0.6.0)** — routing becomes an **opt-in, activatable capability**:
+  `nvllm router on` scans the model cache for **System One decision models**
+  (vendor-neutral `model_router.yaml` marker, never hardcoded to local models),
+  lets you pick the judge, and — optionally — has an **already-loaded local
+  model read their metadata and recommend one**; the choice is **persisted**
+  (`state_dir()/router.json`) and, on the next `nvllm serve`, the judge runs
+  **resident** and a new **`AutoRouter`** model option appears (`nvllm list`,
+  `/api/tags`, `/v1/models`) that routes each request through the resident
+  judge; `nvllm router off` / `nvllm router status` deactivate and inspect;
+  `POST /api/router` + `POST /api/router/recommend` endpoints. The 0.5.0
+  explicit-flag path (`--router-judge`) and hidden `model: "auto"` alias remain
+  (flag wins over persisted activation). ✅

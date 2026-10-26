@@ -10,7 +10,32 @@ def _catalog(fake_hub):
 def test_catalog_entries(fake_hub):
     catalog = _catalog(fake_hub)
     names = sorted(m.name for m in catalog)
-    assert names == ["acme/Embedder:main", "acme/TinyLM:main", "acme/WanVideo:main"]
+    assert names == ["acme/DecisionLM:main", "acme/Embedder:main", "acme/TinyLM:main", "acme/WanVideo:main"]
+
+
+def test_decision_model_flagged(fake_hub):
+    """A model that ships model_router.yaml is flagged as a decision model; ordinary
+    chat/embedding models are not."""
+    catalog = _catalog(fake_hub)
+    dm = next(m for m in catalog if m.repo == "acme/DecisionLM")
+    assert dm.is_decision_model is True
+    # a decision model is still a servable completion model (it's the router judge)
+    assert Capability.COMPLETION in dm.capabilities and dm.supported
+    for repo in ("acme/TinyLM", "acme/Embedder"):
+        assert next(m for m in catalog if m.repo == repo).is_decision_model is False
+
+
+def test_read_decision_info_parses_yaml(fake_hub):
+    from nvllm_service.catalog import read_decision_info
+
+    dm = next(m for m in _catalog(fake_hub) if m.repo == "acme/DecisionLM")
+    info = read_decision_info(dm.snapshot_dir)
+    assert info.get("decision_model") is True
+    assert info.get("base_model") == "Qwen3-4B"
+    assert "decision model for routing" in info.get("description", "")
+    # a non-decision model yields no decision info
+    tiny = next(m for m in _catalog(fake_hub) if m.repo == "acme/TinyLM")
+    assert read_decision_info(tiny.snapshot_dir) == {}
 
 
 def test_capabilities_detected(fake_hub):
