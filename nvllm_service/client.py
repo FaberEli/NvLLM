@@ -333,7 +333,8 @@ def cmd_router(
 
     if not dms:
         out_fn("could not activate the router: no System One decision models found in the cache.")
-        out_fn("  NvLLM detects them by the `model_router.yaml` file a decision model ships.")
+        out_fn("  NvLLM detects them by a decision-marker file (e.g. `decision_config.json` /")
+        out_fn("  `model_router.yaml`) or a 'decision' name; or name one directly with `nvllm router on --judge <name>`.")
         out_fn("  Download one, then retry `nvllm router on`:")
         out_fn("    pip install -U 'huggingface_hub[cli]'")
         out_fn("    hf download <org>/<decision-model>      # e.g. a StartLux / SII / Intern decision model")

@@ -222,7 +222,7 @@ def _scan_one(model_dir: Path, hub_root: Path) -> list[ModelInfo]:
             capabilities=caps,
             supported=unsupported is None,
             note=unsupported or "",
-            is_decision_model=is_decision_snapshot(snapshot),
+            is_decision_model=is_decision_snapshot(snapshot, repo),
         )
         results.append(info)
     return results

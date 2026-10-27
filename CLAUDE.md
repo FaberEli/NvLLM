@@ -5,7 +5,7 @@ user-facing doc; this file is for working on the code.
 
 ## Running
 
-- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (182 tests)
+- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (185 tests)
 - Dev server (default bind `0.0.0.0:8004`): `nvllm serve` or
   `.venv/bin/python -m nvllm_service serve --hf-hub-root <cache>`
 - **Single entry (0.3.0, breaking):** `nvllm` (= `nvllm_service.cli:main`) and
@@ -35,13 +35,18 @@ user-facing doc; this file is for working on the code.
   `main`/`latest` ref (HF caches usually only have `main`). Sets
   `ModelInfo.is_decision_model` from the snapshot (`is_decision_snapshot`).
 - `catalog.py` — `ModelInfo`, `Capability` (completion / embedding / tools).
-  **Decision models (0.6.0):** `ModelInfo.is_decision_model` (bool); detected by
-  the vendor-neutral marker `DECISION_MODEL_YAML = "model_router.yaml"` at the
-  snapshot root (`is_decision_snapshot(dir)` → presence check; `read_decision_info(dir)`
-  → parses the yaml's `name`/`base_model`/`description`/`parameter_size`, tolerating
-  the StartLux `{model_router: {…}}` and SII flat shapes, and degrading to
-  file-presence if `pyyaml` is absent or the file is unparseable). **Do NOT
-  hardcode local model names** — the marker is the only signal (NvLLM is a
+  **Decision models (0.6.0):** `ModelInfo.is_decision_model` (bool). `is_decision_snapshot(dir, repo)`
+  is **multi-signal and generic** (never tied to one local model — E2E-verified to
+  catch all of the user's StartLux/Intern/SII decision models): (1) a decision-marker
+  **file** at the snapshot root — `DECISION_MARKER_FILES = ("decision_config.json",
+  "model_router.yaml")` (StartLux ships `decision_config.json`; other families ship
+  `model_router.yaml`); (2) fallback: the **repo name** carries `DECISION_NAME_KEYWORD`
+  (`"decision"` — StartLux/Intern/SII all name them `*-Decision`). `read_decision_info(dir, repo)`
+  reads metadata from whichever marker file is present (`decision_config.json` →
+  `format`/`max_options_per_pass`; `model_router.yaml` → `name`/`base_model`/
+  `description`/`parameter_size`), degrading to a minimal dict (or `{}`) on missing/
+  unparseable files or absent `pyyaml`. `discovery` passes `repo` in. `nvllm router on
+  --judge` always overrides. **Do NOT hardcode specific local model names** (NvLLM is a
   general-purpose engine; NVFP4/DGX Spark is one optimization focus, not a cap).
 - `config.py` — `Settings` dataclass. `hf_hub_root` is a **field** (`Path|None`);
   `hub_root()` is the **method** that applies the default.

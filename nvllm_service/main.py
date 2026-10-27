@@ -441,7 +441,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         decision_models = []
         for m in catalog:
             if m.is_decision_model:
-                info = read_decision_info(m.snapshot_dir)
+                info = read_decision_info(m.snapshot_dir, m.repo)
                 decision_models.append(
                     {
                         "name": m.name,
@@ -449,7 +449,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "base_model": info.get("base_model") or m.model_type or "",
                         "description": info.get("description") or "",
                         "parameter_size": info.get("parameter_size") or "",
-                        "source": info.get("source") or "model_router.yaml",
+                        "source": info.get("source") or "decision model",
                     }
                 )
         # report both the LIVE router (built this session) and the PERSISTED

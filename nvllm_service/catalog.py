@@ -1,18 +1,27 @@
 """Model metadata: one entry per discovered HuggingFace cache model."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-# the on-disk file that marks a snapshot as a "System One decision model"
-# (a small model trained to score options A/B/C and emit a distribution).
-# It is a *file convention*, not a vendor name — so detecting on it stays
-# generic and is never tied to one model family. Both StartLux-Decision and
-# SII-Decision ship it; ordinary chat models do not (they ship lora_config.yaml).
-DECISION_MODEL_YAML = "model_router.yaml"
+# Signals that mark a snapshot as a "System One decision model" — a small model
+# trained to score options A/B/C and emit a probability distribution (the Router
+# judge). Detection is deliberately **generic** and never tied to one specific
+# local model, so it holds for decision models from any vendor and stays a clean
+# negative for ordinary chat/embedding models. Two signals (either suffices):
+#   1. a decision-marker file at the snapshot root — vendor file conventions:
+#      StartLux-Decision ships ``decision_config.json``; some families ship
+#      ``model_router.yaml``. Checked first (strongest, explicit).
+#   2. fallback: the repo name carries the ``decision`` class keyword (StartLux /
+#      Intern / SII all name them ``*-Decision``). Matching the *class keyword* —
+#      not a specific repo — keeps it generic while catching families that ship
+#      no marker file. ``nvllm router on --judge`` always overrides either.
+DECISION_MARKER_FILES = ("decision_config.json", "model_router.yaml")
+DECISION_NAME_KEYWORD = "decision"
 
 
 class Capability(str, Enum):
@@ -121,52 +130,83 @@ class ModelInfo:
         }
 
 
-def is_decision_snapshot(snapshot_dir: Path | str) -> bool:
-    """A snapshot is a decision model iff it ships ``model_router.yaml``.
+def is_decision_snapshot(snapshot_dir: Path | str, repo: str | None = None) -> bool:
+    """A snapshot is a decision model iff it ships a decision-marker file, or its
+    repo name carries the ``decision`` class keyword (see module constants).
 
-    This is the generic, vendor-neutral signal (see ``DECISION_MODEL_YAML``) —
-    it never depends on a specific model name, so it holds for any decision
-    model following that convention and stays a clean negative for ordinary
-    chat/embedding models.
-    """
-    return (Path(snapshot_dir) / DECISION_MODEL_YAML).is_file()
-
-
-def read_decision_info(snapshot_dir: Path | str) -> dict:
-    """Read the routing-relevant fields from a decision model's
-    ``model_router.yaml`` (name / base_model / description / parameter_size).
-
-    Never raises: a missing file, a missing ``pyyaml`` install, or an unparseable
-    file all degrade to a minimal ``{"decision_model": True, ...}`` (or ``{}``
-    when the file is absent) — discovery and the router must not die on an odd
-    checkpoint. ``pyyaml`` is imported lazily so the default path stays free of it.
+    Both signals are generic (a file convention / a semantic class keyword), so
+    detection never depends on one specific local model and stays a clean negative
+    for ordinary chat/embedding models.
     """
     snap = Path(snapshot_dir)
-    yaml_path = snap / DECISION_MODEL_YAML
-    if not yaml_path.is_file():
-        return {}
-    base = {"decision_model": True, "source": DECISION_MODEL_YAML}
-    try:
-        import yaml  # local: keep pyyaml out of the module import path
-    except ImportError:
+    if any((snap / marker).is_file() for marker in DECISION_MARKER_FILES):
+        return True
+    if repo and DECISION_NAME_KEYWORD in repo.lower():
+        return True
+    return False
+
+
+def read_decision_info(snapshot_dir: Path | str, repo: str | None = None) -> dict:
+    """Read routing-relevant metadata for a decision model.
+
+    Tries the decision-marker files in order (``decision_config.json`` then
+    ``model_router.yaml``) and degrades gracefully: a missing file, a missing
+    ``pyyaml`` install, or an unparseable file all yield a minimal dict rather
+    than raising — discovery and the router must not die on an odd checkpoint.
+    Returns ``{}`` only when nothing marks the snapshot as a decision model.
+    """
+    snap = Path(snapshot_dir)
+
+    # 1) JSON marker (StartLux "lodestar-letter-readout" decision models)
+    json_path = snap / "decision_config.json"
+    if json_path.is_file():
+        base: dict = {"decision_model": True, "source": "decision_config.json"}
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            doc = None
+        if isinstance(doc, dict):
+            if doc.get("format"):
+                base["description"] = str(doc["format"])
+            if doc.get("max_options_per_pass"):
+                base["parameter_size"] = f"≤{doc['max_options_per_pass']} options/pass"
         return base
-    try:
-        with open(yaml_path, "r", encoding="utf-8") as f:
-            doc = yaml.safe_load(f)
-    except (OSError, yaml.YAMLError):
+
+    # 2) YAML marker (other vendors)
+    yaml_path = snap / "model_router.yaml"
+    if yaml_path.is_file():
+        base = {"decision_model": True, "source": "model_router.yaml"}
+        try:
+            import yaml  # local: keep pyyaml out of the module import path
+        except ImportError:
+            return base
+        try:
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                doc = yaml.safe_load(f)
+        except (OSError, yaml.YAMLError):
+            return base
+        if isinstance(doc, dict):
+            # the useful fields live either at the top level or under a
+            # ``model_router:`` key (vendors differ); try the nested one first.
+            inner = doc.get("model_router")
+            if not isinstance(inner, dict):
+                inner = doc
+            base.update(
+                {
+                    k: str(v)
+                    for k, v in {
+                        "name": inner.get("name") or inner.get("model_name"),
+                        "base_model": inner.get("base_model") or inner.get("base"),
+                        "description": inner.get("description") or inner.get("model_description"),
+                        "parameter_size": inner.get("parameter_size"),
+                    }.items()
+                    if v
+                }
+            )
         return base
-    if not isinstance(doc, dict):
-        return base
-    # the useful fields live either at the top level or under a ``model_router:``
-    # key (vendors differ); try the nested one first, then the top level.
-    inner = doc.get(DECISION_MODEL_YAML.rstrip(".yaml"))
-    if not isinstance(inner, dict):
-        inner = doc
-    info = {
-        "name": str(inner.get("name") or inner.get("model_name") or ""),
-        "base_model": str(inner.get("base_model") or inner.get("base") or ""),
-        "description": str(inner.get("description") or inner.get("model_description") or ""),
-        "parameter_size": str(inner.get("parameter_size") or ""),
-    }
-    base.update({k: v for k, v in info.items() if v})
-    return base
+
+    # 3) detected by repo-name keyword only — no marker-file metadata to read
+    if repo and DECISION_NAME_KEYWORD in repo.lower():
+        return {"decision_model": True, "source": f"name (contains '{DECISION_NAME_KEYWORD}')"}
+    return {}

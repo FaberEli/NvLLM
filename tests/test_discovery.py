@@ -29,13 +29,68 @@ def test_read_decision_info_parses_yaml(fake_hub):
     from nvllm_service.catalog import read_decision_info
 
     dm = next(m for m in _catalog(fake_hub) if m.repo == "acme/DecisionLM")
-    info = read_decision_info(dm.snapshot_dir)
+    info = read_decision_info(dm.snapshot_dir, "acme/DecisionLM")
     assert info.get("decision_model") is True
     assert info.get("base_model") == "Qwen3-4B"
     assert "decision model for routing" in info.get("description", "")
     # a non-decision model yields no decision info
     tiny = next(m for m in _catalog(fake_hub) if m.repo == "acme/TinyLM")
-    assert read_decision_info(tiny.snapshot_dir) == {}
+    assert read_decision_info(tiny.snapshot_dir, "acme/TinyLM") == {}
+
+
+def test_decision_model_flagged_by_name_only(fake_hub):
+    """A model whose repo name carries 'decision' is flagged even with NO marker file."""
+    sha = "e" * 40
+    mdir = fake_hub / "models--acme--RouterDecision"
+    (mdir / "refs").mkdir(parents=True)
+    (mdir / "refs" / "main").write_text(sha)
+    snap = mdir / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text('{"architectures": ["DecForCausalLM"], "model_type": "dec", "hidden_size": 32, "num_hidden_layers": 1, "vocab_size": 16}')
+    (snap / "model.safetensors").write_bytes(b"\0" * 512)
+    m = next(x for x in _catalog(fake_hub) if x.repo == "acme/RouterDecision")
+    assert m.is_decision_model is True
+    from nvllm_service.catalog import read_decision_info
+    info = read_decision_info(m.snapshot_dir, "acme/RouterDecision")
+    assert info.get("decision_model") is True and "name" in info.get("source", "")
+
+
+def test_decision_model_flagged_by_config_json(fake_hub):
+    """A model shipping decision_config.json (the StartLux marker) is flagged, and
+    read_decision_info surfaces its readout format from the JSON."""
+    import json as _json
+
+    sha = "f" * 40
+    mdir = fake_hub / "models--acme--StartLuxLike"
+    (mdir / "refs").mkdir(parents=True)
+    (mdir / "refs" / "main").write_text(sha)
+    snap = mdir / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text('{"architectures": ["DecForCausalLM"], "model_type": "dec", "hidden_size": 32, "num_hidden_layers": 1, "vocab_size": 16}')
+    (snap / "decision_config.json").write_text(_json.dumps({"format": "lodestar-letter-readout-v1", "max_options_per_pass": 26, "letter_token_ids": [32, 33, 34]}))
+    (snap / "model.safetensors").write_bytes(b"\0" * 512)
+    m = next(x for x in _catalog(fake_hub) if x.repo == "acme/StartLuxLike")
+    assert m.is_decision_model is True
+    from nvllm_service.catalog import read_decision_info
+    info = read_decision_info(m.snapshot_dir, "acme/StartLuxLike")
+    assert info.get("source") == "decision_config.json"
+    assert "lodestar-letter-readout" in info.get("description", "")
+    assert "26" in info.get("parameter_size", "")
+
+
+def test_regular_model_not_flagged(fake_hub):
+    """An ordinary chat model (no marker file, no 'decision' in the name) is NOT
+    flagged as a decision model."""
+    sha = "0" * 40
+    mdir = fake_hub / "models--acme--PlainChat"
+    (mdir / "refs").mkdir(parents=True)
+    (mdir / "refs" / "main").write_text(sha)
+    snap = mdir / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text('{"architectures": ["PlainForCausalLM"], "model_type": "plain", "hidden_size": 32, "num_hidden_layers": 1, "vocab_size": 16}')
+    (snap / "model.safetensors").write_bytes(b"\0" * 512)
+    m = next(x for x in _catalog(fake_hub) if x.repo == "acme/PlainChat")
+    assert m.is_decision_model is False
 
 
 def test_capabilities_detected(fake_hub):

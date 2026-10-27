@@ -21,7 +21,8 @@ inference engine: one `nvllm` CLI, a resident model service, and local agents
 >
 > **0.6.0 (this release):** routing is now an **opt-in, activatable
 > capability**. `nvllm router on` scans your model cache for **System One
-> decision models** (detected by a vendor-neutral `model_router.yaml`), lets you
+> decision models** (detected by a decision-marker file or a `decision` name —
+> generic, never a hardcoded local model), lets you
 > pick the judge — with an optional **recommendation** from an already-loaded
 > local model — and persists the choice so that on the next `nvllm serve` the
 > judge runs **resident** and a new **`AutoRouter`** option appears in the model
@@ -211,10 +212,13 @@ nvllm router off       # deactivate
 What `nvllm router on` does:
 
 1. **Scans your model cache for *System One* decision models.** A model is
-   recognized as a decision model when its snapshot carries a
-   **`model_router.yaml`** (a vendor-neutral marker — NvLLM does **not** hardcode
-   any local model name). If **none** are found, it reports that activation
-   failed and prints `hf download <org>/<decision-model>` guidance.
+   recognized as a decision model when its snapshot carries a decision-marker
+   file (**`decision_config.json`** or **`model_router.yaml`** — a vendor file
+   convention) or its name carries the `decision` class keyword (StartLux /
+   Intern / SII all ship `*-Decision`). Detection is **generic** — NvLLM does
+   **not** hardcode any specific local model name. If **none** are found, it
+   reports that activation failed and prints `hf download <org>/<decision-model>`
+   guidance (or name one directly with `--judge`).
 2. **Lists the decision models** you have, numbered, and lets you pick the judge.
    You can also pass the judge directly to skip the prompt:
    `nvllm router on --judge acme/DecisionLM`.
@@ -393,7 +397,7 @@ Work from the repo with an editable venv instead:
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pip install "vllm==0.31.0"          # the engine (validated baseline)
-python -m pytest -q                 # 182 tests, no GPU needed
+python -m pytest -q                 # 185 tests, no GPU needed
 ```
 
 ## Quickstart
@@ -539,7 +543,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-The suite (182 tests) uses a fake HF hub cache and a stub OpenAI-compatible
+The suite (185 tests) uses a fake HF hub cache and a stub OpenAI-compatible
 worker (including a logprobs-returning stub for the Router), so it runs without a
 GPU or a real vLLM install — it also runs in CI.
 
@@ -635,7 +639,8 @@ use.
   Validated end-to-end on DGX Spark against real 0.8B & 4B decision models. ✅
 - **M14 (0.6.0)** — routing becomes an **opt-in, activatable capability**:
   `nvllm router on` scans the model cache for **System One decision models**
-  (vendor-neutral `model_router.yaml` marker, never hardcoded to local models),
+  (a decision-marker file like `decision_config.json`/`model_router.yaml`, or a
+  `decision` name — generic, never hardcoded to local models),
   lets you pick the judge, and — optionally — has an **already-loaded local
   model read their metadata and recommend one**; the choice is **persisted**
   (`state_dir()/router.json`) and, on the next `nvllm serve`, the judge runs
