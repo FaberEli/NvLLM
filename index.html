@@ -313,12 +313,12 @@
 <!-- ================= 快速上手 ================= -->
 <section id="quickstart">
   <h2><span class="no">01</span>30 秒上手</h2>
-  <p class="lede">目标机器只需要 Linux aarch64 + CUDA GPU + 约 10GB 空闲磁盘——tarball 自带预构建 venv（vLLM 0.31.0），<b>不需要装 Python / pip</b>。</p>
+  <p class="lede">目标机器需要 Linux aarch64 + CUDA GPU + <b>Python 3.11-3.13</b> + 联网——tarball 只是几 MB 的源码包，安装时 <code>pip</code> 拉取 vLLM 引擎（torch+CUDA，一次约 3-4GB）+ nvllm（Ollama 式：小下载、重件分离拉取）。</p>
 
   <div class="term">
     <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — 安装 &amp; 启动</span><button class="copy">复制</button></div>
     <pre><span class="p">$</span> <span>curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash</span>
-<span class="c"># → 下载自包含 tarball（本版本为两个 &lt;2GB 分卷，脚本自动重拼）→ 安装到 ~/.nvllm</span>
+<span class="c"># → 下载几 MB 源码 tarball（单资产、不分卷）→ 建 venv 并 pip 装 vLLM 引擎 + nvllm → 装到 ~/.nvllm</span>
 <span class="c">#   如需 systemd 用户服务，安装时加：--with-service</span>
 
 <span class="p">$</span> <span>nvllm serve</span>   <span class="c"># 或已装 --with-service 时自动常驻；默认监听 0.0.0.0:8004</span>
@@ -361,7 +361,7 @@ nvidia/Nemotron-Nano-9B-v2-NVFP4           9c0d1e2f     6.1 GB    5 days ago</sp
     <div class="card reveal"><div class="ico">👁️</div><h4>视觉 + 工具调用</h4><p><code>run --image</code>（可重复）传图提问；<code>--tools FILE</code> / REPL <code>/tools</code> 加载 OpenAI 风格工具。</p></div>
     <div class="card reveal"><div class="ico">🤖</div><h4>launch 本地 Agent</h4><p><code>nvllm launch claude</code> 等 6 种编码 Agent 直接跑在本地模型上（Claude Code 已 E2E 验证）。</p></div>
     <div class="card reveal"><div class="ico">⚡</div><h4>多模型并发驻留</h4><p><code>--max-models</code> 并发常驻；过期优先、LRU 腾位；<code>inflight</code> 保护在途请求（含流式期间）不被回收。</p></div>
-    <div class="card reveal"><div class="ico">📦</div><h4>自包含发行</h4><p>预构建 venv + vLLM 0.31 打进 tarball；一键 install / update / uninstall，可选 systemd 用户服务。</p></div>
+    <div class="card reveal"><div class="ico">📦</div><h4>Ollama 式小发行</h4><p>tarball 只有几 MB（源码+安装器，单 GitHub 资产、不分卷）；安装时 pip 拉 vLLM 引擎——一键 install / update / uninstall，可选 systemd 用户服务。</p></div>
   </div>
 </section>
 
@@ -655,12 +655,13 @@ meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5
     <div class="item reveal"><span class="m">M11</span> <span class="t">虚拟模型 + 视觉/工具 + 自包含发行</span><span class="d"> — <code>create</code>、<code>--image</code>/<code>--tools</code>、prebuilt-venv tarball、bootstrap 一行安装</span></div>
     <div class="item reveal"><span class="m">M12</span> <span class="t">0.4.0 收尾复盘 + Release</span><span class="d"> — 6 处正确性修复 + 4 处结构统一，143 tests，Release 0.4.0 发布</span></div>
     <div class="item reveal"><span class="m">M13</span> <span class="t">决策模型路由 + MIT + 0.5.0</span><span class="d"> — Router judge 升级为常驻<b>决策模型（System One）</b>：选项打分 + 概率分布（vLLM+logprob / 进程内 one-forward），<code>nvllm route</code> 干跑、<code>/api/route</code> 暴露分布；协议 Apache-2.0 → MIT；158 tests，DGX Spark 实测 0.8B/4B 决策模型</span></div>
-    <div class="item reveal"><span class="m">M14</span> <span class="t">可选激活 + AutoRouter + 推荐 + 0.6.0</span><span class="d"> — <code>nvllm router on</code> 扫缓存找决策模型（<code>model_router.yaml</code> 标记，不写死本地模型名）、交互挑 judge、可选让<b>已加载本地大模型读元数据推荐</b>；激活落盘 <code>router.json</code>，下次 <code>serve</code> judge 常驻、列表多出 <code>AutoRouter</code>；<code>router off/status</code>；新增 <code>POST /api/router</code> + <code>POST /api/router/recommend</code>；0.5.0 显式旗标/隐藏别名 <code>auto</code> 仍兼容（旗标优先）</span></div>
+    <div class="item reveal"><span class="m">M14</span> <span class="t">可选激活 + AutoRouter + 推荐 + 0.6.0</span><span class="d"> — <code>nvllm router on</code> 扫缓存找决策模型（<b>多信号通用检测</b>：决策标记文件 <code>decision_config.json</code>/<code>model_router.yaml</code> 或名字含 <code>decision</code>，不写死本地模型名）、交互挑 judge、可选让<b>已加载本地大模型读元数据推荐</b>；激活落盘 <code>router.json</code>，下次 <code>serve</code> judge 常驻、列表多出 <code>AutoRouter</code>；<code>router off/status</code>；新增 <code>POST /api/router</code> + <code>POST /api/router/recommend</code>；0.5.0 显式旗标/隐藏别名 <code>auto</code> 仍兼容（旗标优先）</span></div>
   </div>
   <p class="lede" style="margin-top:6px">
-    <b>发行说明：</b>GitHub 单资产上限 2GB，0.4.0 的 ~3.7GB tarball 以两个 <code>&lt;2GB</code> 分卷发布；
-    <code>bootstrap.sh</code> 一行安装命令自动识别并重拼，用户无感。
-    分卷拼接后 sha256：<code>49ef13159fc731e00c5f581a984de5148fb14dabbf333bd75488116a849b099e</code>
+    <b>发行说明（0.6.0，Ollama 式）：</b>tarball 只是几 MB 的<b>纯 NvLLM 源码 + 安装器</b>（单 GitHub 资产、<b>不分卷</b>），
+    不含任何依赖（无 venv/vLLM/torch）——运行依赖在<b>安装完成后、按目标环境</b>才 <code>pip</code> 拉取 + JIT 编译（Ollama 式「小下载 + 重件分离」）。
+    <code>bootstrap.sh</code> 一行安装、<code>update.sh</code> 从 release 更新。
+    <span class="c">（历史：0.4.0 曾捆绑 ~3.7GB venv、需两卷 &lt;2GB 分卷，已弃用。）</span>
   </p>
 </section>
 

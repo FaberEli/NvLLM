@@ -3,6 +3,17 @@
 Ollama-style resident inference service backed by vLLM. `README.md` is the
 user-facing doc; this file is for working on the code.
 
+## Packaging principle (charter)
+
+**The repo and the release tarball contain ONLY nvllm's own files** (source +
+installer + docs). Every other runtime dependency — vLLM, torch, CUDA, and the
+JIT-compiled FlashInfer/CUTLASS kernels — is **fetched after install and compiled
+for the target environment** (pip at install time; CUDA-kernel JIT at first
+`serve`). So the artifact is a few-MB pure-source bundle (single GitHub asset,
+no 2 GB split), and nothing environment-specific is ever prebuilt or bundled.
+Don't start bundling wheels / a venv / compiled kernels into the repo or the
+tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
+
 ## Running
 
 - Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (185 tests)
@@ -21,12 +32,15 @@ user-facing doc; this file is for working on the code.
   user service (`--with-service`). `scripts/update.sh` upgrades (vLLM stays pinned
   unless `--upgrade-vllm`); `scripts/uninstall.sh` restores the environment
   (models/caches kept unless `--purge`). All honor `NVLLM_HOME` to relocate the root.
-- **Self-contained release (0.4.0):** `scripts/build-release.sh` builds
-  `dist/nvllm-<ver>-linux-aarch64/` (install.sh + prebuilt `venv/` with vLLM +
-  non-editable nvllm + LICENSE/README) → tarball. `scripts/bootstrap.sh` is the
-  `curl|bash` front-end (download → extract → bundled install.sh). install.sh
-  auto-detects a sibling `venv/` (the staging layout) and **skips pip** — keep
-  that layout (install.sh next to venv/) if you change the build script.
+- **Release (0.6.0, Ollama-style small artifact):** `scripts/build-release.sh`
+  stages `install.sh` + `nvllm_service/` source + `pyproject.toml` + `scripts/`
+  (update/uninstall/bootstrap) + LICENSE/README → a **few-MB tarball** (NO bundled
+  venv — the vLLM engine is pulled at install time). `scripts/bootstrap.sh` is the
+  `curl|bash` front-end (download → extract → bundled install.sh). `install.sh`
+  pip-installs `vllm==<pin>` + nvllm into a fresh venv (needs network + Python
+  3.11-3.13). It **still** auto-detects a sibling prebuilt `venv/` and skips pip if
+  one is bundled (0.4.0 back-compat), so both layouts keep working. Single GitHub
+  asset (no 2 GB split).
 
 ## Layout
 

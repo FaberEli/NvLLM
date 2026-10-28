@@ -27,7 +27,10 @@ inference engine: one `nvllm` CLI, a resident model service, and local agents
 > local model — and persists the choice so that on the next `nvllm serve` the
 > judge runs **resident** and a new **`AutoRouter`** option appears in the model
 > list; selecting it routes each request to the best local model. `nvllm router
-> off` / `nvllm router status` deactivate and inspect it.
+> off` / `nvllm router status` deactivate and inspect it. Packaging is now
+> **Ollama-style**: the Release tarball is a small source bundle (a few MB,
+> single GitHub asset) and `install.sh` pulls the vLLM engine via `pip` at
+> install time — no more 2 GB-split, bundled-venv tarball.
 
 Built to serve **NVFP4-quantized** models at full speed on **DGX Spark (GB10)**
 unified memory. It discovers models from your local HuggingFace hub cache,
@@ -356,34 +359,33 @@ It is idempotent — re-running it upgrades in place.
 By default your **model weights and caches are kept** — the script lists what it
 removes and what it keeps before asking.
 
-### Self-contained release (one line)
+### Release (one line)
 
-For machines without python/pip: the release tarball bundles a prebuilt venv
-(python + vLLM + nvllm, ~2-4 GB), so the installer only moves it into place —
-no interpreter selection, no pip:
+The release tarball is now **small** (the nvllm source + installer, a few MB).
+The installer creates a venv and `pip install`s the vLLM engine
+(`vllm==0.31.0` → pulls torch+CUDA, one-time ~3-4 GB) plus nvllm, so the target
+needs **network + Python 3.11-3.13**. This mirrors Ollama's shape (small download;
+heavy bits pulled at install) and, unlike the 0.4.0 "bundled venv" release,
+uploads as a **single GitHub asset** (no 2 GB split). `install.sh` still
+auto-detects a sibling `venv/` and skips pip if one is bundled (backward-compat):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash
 curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash --with-service
 ```
 
-Build the tarball on an aarch64 linux machine (python 3.11-3.13, network,
-~15 GB free disk; a few minutes for the vLLM pull):
+Build the tarball on any Linux machine (no vLLM/torch needed here — it only
+stages source, so it finishes in seconds):
 
 ```bash
-scripts/build-release.sh        # → dist/nvllm-0.4.0-linux-aarch64.tar.gz
+scripts/build-release.sh        # → dist/nvllm-0.6.0-linux-aarch64.tar.gz (a few MB)
 ```
 
-then attach it to a GitHub Release. **GitHub caps a single release asset at
-2 GB** — a bigger tarball must be split and uploaded as parts, which
-`bootstrap.sh` reassembles transparently:
+then upload that **single** asset to a GitHub Release — the small size means no
+splitting (GitHub's 2 GB single-asset cap is never hit):
 
 ```bash
-# tarball > 2 GB: split into ≤1.9 GB parts and upload each
-split -b 1900M -d -a 2 nvllm-0.4.0-linux-aarch64.tar.gz nvllm-0.4.0-linux-aarch64.tar.gz.part-
-gh release upload 0.4.0 nvllm-0.4.0-linux-aarch64.tar.gz.part-00 --clobber
-gh release upload 0.4.0 nvllm-0.4.0-linux-aarch64.tar.gz.part-01 --clobber
-# (≤ 2 GB releases: upload the single tarball directly — bootstrap.sh handles both)
+gh release create 0.6.0 dist/nvllm-0.6.0-linux-aarch64.tar.gz --title "nvllm 0.6.0"
 ```
 
 Knobs: `NVLLM_VERSION`, `NVLLM_RELEASE_URL`, `NVLLM_HOME`; extra args
@@ -649,4 +651,7 @@ use.
   judge; `nvllm router off` / `nvllm router status` deactivate and inspect;
   `POST /api/router` + `POST /api/router/recommend` endpoints. The 0.5.0
   explicit-flag path (`--router-judge`) and hidden `model: "auto"` alias remain
-  (flag wins over persisted activation). ✅
+  (flag wins over persisted activation). Packaging switches to **Ollama-style**:
+  the Release tarball is a small source bundle (a few MB, single GitHub asset)
+  and `install.sh` pulls the vLLM engine via `pip` at install time — replacing
+  the 0.4.0 bundled-venv tarball that had to be split into 2 GB parts. ✅

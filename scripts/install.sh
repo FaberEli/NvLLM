@@ -173,11 +173,22 @@ pip_install() {
 
 # ------------------------------------------------------------- install pkgs ---
 if [ "$PREBUILT" -eq 0 ]; then
-  log "installing vLLM engine: vllm==$VLLM_VERSION (validated baseline; pulls matching torch)"
+  # Locate the nvllm package source (pyproject.toml + nvllm_service/). The
+  # release layout keeps install.sh at the top level next to the source; the repo
+  # layout keeps it under scripts/. Accept whichever sibling holds the package.
+  SRC_ROOT=""
+  for cand in "$SCRIPT_DIR" "$REPO_ROOT"; do
+    if [ -f "$cand/pyproject.toml" ] && [ -d "$cand/nvllm_service" ]; then
+      SRC_ROOT="$(cd "$cand" && pwd)"; break
+    fi
+  done
+  [ -n "$SRC_ROOT" ] || die "could not find the nvllm package source (pyproject.toml + nvllm_service/) near $SCRIPT_DIR"
+
+  log "installing vLLM engine: vllm==$VLLM_VERSION (validated baseline; pulls matching torch+CUDA — needs network)"
   pip_install "vllm==$VLLM_VERSION"
 
-  log "installing nvllm from: $REPO_ROOT"
-  pip_install "$REPO_ROOT"
+  log "installing nvllm from: $SRC_ROOT"
+  pip_install "$SRC_ROOT"
 fi
 
 # -------------------------------------------------------------------- smoke ---
