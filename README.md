@@ -4,6 +4,8 @@ Ollama-style inference suite backed by vLLM — the **NvLLM** model-backend
 inference engine: one `nvllm` CLI, a resident model service, and local agents
 (Claude Code, Codex, …) wired to your models.
 
+> **中文文档：** [README.zh-CN.md](README.zh-CN.md)
+
 > **0.3.0 breaking change:** the CLI is now a single `nvllm <command>` entry
 > (Ollama-style). The old `nvllm-serve` binary is gone — `nvllm serve` replaces
 > it (the installer retires the old symlink/unit automatically).
@@ -631,6 +633,8 @@ use.
   gates `ANTHROPIC_MODEL` client-side but accepts any name in `settings.json`
   → `CLAUDE_CONFIG_DIR`); self-contained release (`build-release.sh` tarball
   with bundled python+vLLM, `bootstrap.sh` one-line install). ✅
+- **M12 (0.4.0 close-out)** — deep review & optimization: 6 correctness fixes +
+  4 structural unifications (143 tests). ✅
 - **M13 (0.5.0)** — the Router judge becomes a **decision model (System One)**:
   candidates are scored as options and the choice is read from the judge's
   probability distribution over the option letters (default **vLLM + logprob**

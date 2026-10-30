@@ -57,3 +57,17 @@ def test_save_rejects_bad_backend(tmp_path: Path):
 
     with pytest.raises(ValueError):
         store.save(RouterConfig(enabled=True, judge="acme/X", backend="bogus"))
+
+
+def test_load_tolerates_corrupt_top_logprobs(tmp_path: Path):
+    # A non-numeric top_logprobs in router.json must not crash the loader
+    # (previously int() raised ValueError and took the whole server down);
+    # it falls back to the default of 32.
+    store = RouterConfigStore(tmp_path / "router.json")
+    (tmp_path / "router.json").write_text(
+        '{"enabled": true, "judge": "acme/DecisionLM:main", "top_logprobs": "lots"}',
+        encoding="utf-8",
+    )
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.top_logprobs == 32

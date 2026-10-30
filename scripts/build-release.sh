@@ -59,6 +59,7 @@ cp -a "$REPO_ROOT/nvllm_service" "$STAGE/nvllm_service"
 cp -a "$REPO_ROOT/pyproject.toml" "$STAGE/pyproject.toml"
 [ -f "$REPO_ROOT/LICENSE" ]  && cp "$REPO_ROOT/LICENSE"  "$STAGE/LICENSE"
 [ -f "$REPO_ROOT/README.md" ] && cp "$REPO_ROOT/README.md" "$STAGE/README.md"
+[ -f "$REPO_ROOT/README.zh-CN.md" ] && cp "$REPO_ROOT/README.zh-CN.md" "$STAGE/README.zh-CN.md"
 
 # post-install helpers + the installer (install.sh at the top level, as before)
 mkdir -p "$STAGE/scripts"

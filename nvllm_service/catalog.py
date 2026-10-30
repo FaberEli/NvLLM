@@ -65,9 +65,11 @@ class ModelInfo:
     capabilities: set[Capability] = field(default_factory=set)
     supported: bool = True
     note: str = ""  # why unsupported, if any
-    # True if this snapshot is a System One *decision model* (ships a
-    # model_router.yaml). Such models are candidates for the Router judge, not
-    # for being routed to as a general chat model.
+    # True if this snapshot is a System One *decision model* — detected by a
+    # decision-marker file (``decision_config.json`` / ``model_router.yaml``) or a
+    # ``decision`` name keyword (see ``is_decision_snapshot``; generic, never a
+    # hardcoded local model). Such models are candidates for the Router judge,
+    # not for being routed to as a general chat model.
     is_decision_model: bool = False
 
     @property

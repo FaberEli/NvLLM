@@ -67,12 +67,16 @@ class RouterConfigStore:
         if not judge:
             return None
         candidates = doc.get("candidates")
+        try:
+            top_logprobs = int(doc.get("top_logprobs") or 32)
+        except (TypeError, ValueError):
+            top_logprobs = 32  # a corrupt value must not take the server down
         return RouterConfig(
             enabled=True,
             judge=judge,
             candidates=[c for c in (candidates or []) if isinstance(c, str) and c.strip()],
             backend=str(doc.get("backend") or BACKEND_VLLM),
-            top_logprobs=max(1, int(doc.get("top_logprobs") or 32)),
+            top_logprobs=max(1, top_logprobs),
             activated_at=str(doc.get("activated_at") or ""),
         )
 
