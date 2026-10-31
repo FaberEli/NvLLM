@@ -11,10 +11,29 @@ import logging
 import os
 import shutil
 import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from . import __version__, client, launch
 from .config import Settings
 from .main import create_app
+
+
+def attach_file_logging(logs_dir: Path | str) -> Path:
+    """Also write service logs to ``<logs_dir>/service.log`` (rotating).
+
+    Under systemd the service's stderr goes to journald, but the file log is
+    the one ``nvllm logs`` reads (and works the same in the foreground). One
+    handler on the root logger captures nvllm's loggers; uvicorn's propagate
+    to root as well. Returns the service-log path.
+    """
+    logs_dir = Path(logs_dir)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    target = logs_dir / "service.log"
+    handler = RotatingFileHandler(target, maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(handler)
+    return target
 
 
 def _preflight_vllm() -> None:
@@ -88,6 +107,7 @@ def run_server(argv: list[str] | None = None, prog: str = "nvllm serve") -> int:
     if args.router_top_logprobs is not None:
         s.router_top_logprobs = max(1, args.router_top_logprobs)
 
+    attach_file_logging(s.logs_dir())  # service.log — readable via `nvllm logs`
     _preflight_vllm()
     app = create_app(s)
 
@@ -233,6 +253,15 @@ def _build_parser() -> argparse.ArgumentParser:
     st.add_argument("model")
     st.add_argument("--server", default=None, help="server URL (default $NVLLM_SERVER or http://127.0.0.1:8004)")
 
+    lg = sub.add_parser("logs", help="list log files, or tail/follow one (default: service.log)")
+    lg.add_argument("name", nargs="?", default=None, help="log file to read (service.log or a model name)")
+    lg.add_argument("-n", "--lines", type=int, default=50, help="number of lines to show (default 50)")
+    lg.add_argument("-f", "--follow", action="store_true", help="keep printing new lines as they appear")
+    lg.add_argument("--server", default=None, help="server URL (default $NVLLM_SERVER or http://127.0.0.1:8004)")
+
+    dc = sub.add_parser("doctor", help="health check: versions, models, workers, router, GPU, paths")
+    dc.add_argument("--server", default=None, help="server URL (default $NVLLM_SERVER or http://127.0.0.1:8004)")
+
     v = sub.add_parser("version", help="show CLI and server versions")
     v.add_argument("--server", default=None, help="server URL (default $NVLLM_SERVER or http://127.0.0.1:8004)")
 
@@ -313,6 +342,10 @@ def main(argv: list[str] | None = None) -> int:
             return launch.cmd_launch(url, args.agent, args.model, extra, list_only=args.list)
         if args.command == "stop":
             return client.cmd_stop(url, args.model)
+        if args.command == "logs":
+            return client.cmd_logs(url, name=args.name, lines=args.lines, follow=args.follow)
+        if args.command == "doctor":
+            return client.cmd_doctor(url)
         if args.command == "version":
             return client.cmd_version(url)
         p.print_help()

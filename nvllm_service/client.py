@@ -231,6 +231,108 @@ def cmd_route(url: str, text: str) -> int:
     return 0
 
 
+def cmd_logs(url: str, name: str | None = None, lines: int = 50, follow: bool = False) -> int:
+    """`nvllm logs` — list log files; `nvllm logs [NAME]` tail one; `-f` follow.
+
+    Without NAME: lists every log file (service + workers) and then tails
+    service.log (or the newest one). With NAME: tails that file. Follow mode
+    polls the tail endpoint and prints only new lines.
+    """
+    require_server(url)
+    lines = max(1, min(int(lines or 50), 1000))
+    if name is None:
+        data = _get_json(url, "/api/logs")
+        logs = data.get("logs") or []
+        if logs:
+            print(f"log files in {data.get('dir')}")
+            for lf in logs:
+                print(f"  {lf['name']:<44} {human_bytes(lf['bytes']):>10}  {lf['modified']}")
+            name = "service.log" if any(lf["name"] == "service.log" for lf in logs) else logs[-1]["name"]
+            print()
+        else:
+            print(f"no log files found under {data.get('dir')}")
+            return 0
+    data = _get_json(url, f"/api/logs?name={name}&lines={lines}")
+    print(f"--- {name} (last {lines} lines) ---")
+    for l in data.get("content") or []:
+        print(l)
+    if follow:
+        return _follow_logs(url, name)
+    return 0
+
+
+def _follow_logs(url: str, name: str) -> int:
+    """Poll the tail endpoint once a second and print new lines.
+
+    The window is the last 1000 lines (the server's cap); if a burst outpaces
+    it, the tail re-syncs with a marker instead of silently dropping lines.
+    """
+    import time as _time
+
+    window = 1000
+    prev: list[str] = []
+    print(f"(following {name} — press Ctrl-C to stop)")
+    try:
+        while True:
+            _time.sleep(1)
+            data = _get_json(url, f"/api/logs?name={name}&lines={window}")
+            cur = data.get("content") or []
+            if prev and cur and cur[-1] != prev[-1]:
+                if len(cur) >= window:
+                    print("  … (log advanced faster than the window; showing tail) …")
+                for l in cur[-20:]:
+                    print(l)
+            elif cur:
+                for l in (cur[len(prev):] if prev else cur):
+                    print(l)
+            prev = cur
+    except KeyboardInterrupt:
+        return 0
+    except CLIError as e:
+        print(f"nvllm: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_doctor(url: str) -> int:
+    """`nvllm doctor` — environment + service health report (one glance)."""
+    require_server(url)
+    d = _get_json(url, "/api/doctor")
+    print(f"nvllm doctor — server {d.get('version')} @ {url}")
+    gpu = d.get("gpu")
+    if gpu:
+        # unified-memory SoCs (GB10) report no discrete memory — show what exists
+        parts = [gpu["name"]]
+        if gpu.get("memory_total_mib"):
+            parts.append(f"{gpu['memory_used_mib']/1024:.1f} / {gpu['memory_total_mib']/1024:.1f} GiB used")
+        if gpu.get("utilization_pct") is not None:
+            parts.append(f"{gpu['utilization_pct']}% util")
+        print(f"  gpu       : {' — '.join(parts)}")
+    else:
+        print("  gpu       : nvidia-smi unavailable (CPU-only box, or not on PATH)")
+    m = d.get("models") or {}
+    print(f"  models    : {m.get('supported', '?')}/{m.get('total', '?')} supported, {m.get('decision', 0)} decision model(s)")
+    workers = d.get("workers") or []
+    if workers:
+        for w in workers:
+            tag = "  [judge]" if w.get("is_judge") else ""
+            print(f"    loaded  : {w['name']}  state={w['state']} pid={w['pid']} port={w['port']} inflight={w['inflight']}{tag}")
+    else:
+        print("    loaded  : (none)")
+    r = d.get("router") or {}
+    if r.get("enabled"):
+        print(f"  router    : enabled — judge={r.get('judge')} backend={r.get('backend')} ({len(r.get('candidates') or [])} candidates)")
+    elif r.get("configured"):
+        print("  router    : configured (persisted) but not active in this server — restart `nvllm serve` to activate")
+    else:
+        print("  router    : off (activate with: nvllm router on)")
+    s = d.get("settings") or {}
+    print(f"  limits    : max-models={s.get('max_models')} keep-alive={s.get('keep_alive')}s gpu-mem-util={s.get('gpu_memory_utilization')}")
+    print(f"  cache     : {s.get('hub_root')}")
+    print(f"  logs      : {s.get('logs_dir')}   (nvllm logs)")
+    print(f"  state     : {s.get('state_dir')}")
+    return 0
+
+
 def _router_on_body(judge: str, candidates: list[str] | None, backend: str | None, top_logprobs: int | None) -> dict:
     body = {"action": "on", "judge": judge}
     if candidates:

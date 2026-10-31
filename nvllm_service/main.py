@@ -7,9 +7,12 @@ M2: inference proxy — every request resolves the model from the catalog,
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -26,6 +29,60 @@ from .router_config import RouterConfig, RouterConfigStore
 from .workers import Worker, WorkerManager
 
 log = logging.getLogger(__name__)
+
+
+def _tail_lines(path: Path, n: int) -> list[str]:
+    """Last ``n`` lines of a (potentially large) log file.
+
+    Tail-scans backwards in 64 KiB blocks so memory stays O(n lines), not O(file).
+    """
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        read = 0
+        chunk = b""
+        block = 1 << 16
+        while read < size and chunk.count(b"\n") <= n:
+            step = min(block, size - read)
+            f.seek(size - read - step)
+            chunk = f.read(step) + chunk
+            read += step
+    lines = chunk.decode("utf-8", "replace").splitlines()
+    return lines[-n:]
+
+
+def _gpu_info() -> dict[str, Any] | None:
+    """One-GPU snapshot via nvidia-smi (None when unavailable — CPU boxes, dev machines).
+
+    Numeric fields are permissive: unified-memory SoCs (DGX Spark GB10) report
+    ``[N/A]`` for memory.total/used, so those become None instead of sinking the
+    whole snapshot.
+    """
+    def _int(v: str) -> int | None:
+        try:
+            return int(v)
+        except ValueError:
+            return None  # e.g. "[N/A]" on GB10 unified memory
+
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,memory.used,utilization.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode != 0:
+            return None
+        name, total, used, util = (v.strip() for v in out.stdout.splitlines()[0].split(","))
+        if not name:
+            return None
+        return {
+            "name": name,
+            "memory_total_mib": _int(total),
+            "memory_used_mib": _int(used),
+            "utilization_pct": _int(util),
+        }
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -52,6 +109,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ---- request logging (0.7.0): one line per request — the foundation for
+    # log-driven iteration. Endpoints that resolve a model record
+    # ``{"requested": …, "model": …}`` on the shared request scope (see
+    # ``_mark_route``); 4xx/5xx log at warning/error so they jump out of the
+    # noise.
+    @app.middleware("http")
+    async def _request_log(request: Request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        ms = int((time.perf_counter() - start) * 1000)
+        route = request.scope.get("nvllm_route")
+        suffix = f" requested={route['requested']} model={route['model']}" if route else ""
+        line = "request %s %s -> %d in %d ms%s"
+        args = (request.method, request.url.path, response.status_code, ms, suffix)
+        if response.status_code >= 500:
+            log.error(line, *args)
+        elif response.status_code >= 400:
+            log.warning(line, *args)
+        else:
+            log.info(line, *args)
+        return response
+
+    def _mark_route(request: Request, requested: str, model: str) -> None:
+        """Record the resolved model on the shared scope so the request-log
+        middleware (outside the endpoint's task) can see it."""
+        request.scope["nvllm_route"] = {"requested": requested, "model": model}
+
     app.state.settings = settings
     app.state.catalog = catalog
     app.state.manager = manager
@@ -187,13 +272,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         judge_worker = await ensure(router.judge, keep_alive=-1)
         return await router.decide(judge_worker, request_text)
 
-    async def _resolve_model(body: dict) -> ModelInfo:
+    async def _resolve_model(body: dict, scope: dict | None = None) -> ModelInfo:
         """Resolve the request's model.
 
         Registered aliases (POST /v1/aliases, e.g. Claude Code's gated
         'claude-*' name) are mapped back to the real catalog model first; the
         router triggers — ``AutoRouter`` (the visible option) or the hidden
         ``auto`` alias (0.5.0 back-compat) — then route through the judge.
+
+        ``scope`` (the request's ``request.scope`` dict) is written with
+        ``{"requested": …, "model": …}`` for the request-log middleware.
         """
         name = str(body.get("model") or body.get("name") or "")
         target = app.state.model_aliases.get(name)
@@ -203,14 +291,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if name in ROUTE_TRIGGERS:
             decision = await _route(_request_text(body))
             log.info("routed '%s' -> %s (via %s, dist=%s)", name, decision.chosen.name, decision.backend, decision.distribution)
+            if scope is not None:
+                scope["nvllm_route"] = {"requested": name, "model": decision.chosen.name}
             return decision.chosen
-        return find_model(name)
+        info = find_model(name)
+        if scope is not None:
+            scope["nvllm_route"] = {"requested": name, "model": info.name}
+        return info
 
     def _created(name: str) -> CreatedModel | None:
         """The virtual-model wrapper for `name`, if one was created (`nvllm create`)."""
         return app.state.created.get(name)
 
-    async def _resolve_with_spec(body: dict) -> tuple[ModelInfo, str, CreatedModel | None]:
+    async def _resolve_with_spec(body: dict, scope: dict | None = None) -> tuple[ModelInfo, str, CreatedModel | None]:
         """Resolve the request's model; a created (virtual) name resolves to its
         base model (shared worker) while its wrapper spec is returned for
         request-level injection. Returns (base_info, requested_name, spec)."""
@@ -224,7 +317,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     detail=f"created model '{requested}' points at base '{cm.base}', which is no longer in the HuggingFace cache",
                 )
             body["model"] = cm.base  # catalog resolution happens against the base
-        info = await _resolve_model(body)
+        info = await _resolve_model(body, scope=scope)
+        if scope is not None and scope.get("nvllm_route"):
+            scope["nvllm_route"]["requested"] = requested  # keep the user-visible (virtual) name
         return info, requested, cm
 
     # ---- created-model (virtual) spec injection, shared across protocols ----
@@ -607,10 +702,90 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "candidates": [m.name for m in router.candidates],
         }
 
+    # ---- observability (0.7.0): log access + doctor -------------------------
+    def _log_files() -> list[dict[str, Any]]:
+        logs_dir = settings.logs_dir()
+        if not logs_dir.is_dir():
+            return []
+        files = []
+        for p in sorted(logs_dir.glob("*.log")):
+            st = p.stat()
+            files.append(
+                {
+                    "name": p.name,
+                    "bytes": st.st_size,
+                    "modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(timespec="seconds"),
+                }
+            )
+        return files
+
+    @app.get("/api/logs")
+    async def api_logs(name: str | None = None, lines: int = 50) -> dict[str, Any]:
+        """List the log files, or return the tail of one: ``?name=service.log&lines=200``.
+
+        ``name`` must be a bare ``*.log`` file directly in the logs dir — no
+        paths, no traversal (this is an unauthenticated LAN tool; stay strict).
+        """
+        lines = max(1, min(int(lines or 50), 1000))
+        files = _log_files()
+        if name is None:
+            return {"dir": str(settings.logs_dir()), "logs": files, "content": None}
+        if not name or "/" in name or "\\" in name or name.startswith(".") or ".." in name or not name.endswith(".log"):
+            raise HTTPException(status_code=400, detail="log name must be a bare *.log file (no paths)")
+        target = settings.logs_dir() / name
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail=f"log '{name}' not found")
+        return {"dir": str(target), "logs": files, "content": _tail_lines(target, lines)}
+
+    @app.get("/api/doctor")
+    async def api_doctor() -> dict[str, Any]:
+        """Environment + service health snapshot (drives ``nvllm doctor``)."""
+        supported = [m for m in catalog if m.supported]
+        loaded = [w for w in manager.workers.values() if w.state == "ready"]
+        return {
+            "version": __version__,
+            "settings": {
+                "host": settings.host,
+                "port": settings.port,
+                "max_models": settings.max_models,
+                "keep_alive": settings.default_keep_alive,
+                "gpu_memory_utilization": settings.worker_gpu_memory_utilization,
+                "hub_root": str(settings.hub_root()),
+                "logs_dir": str(settings.logs_dir()),
+                "state_dir": str(settings.state_dir()),
+            },
+            "models": {
+                "total": len(catalog),
+                "supported": len(supported),
+                "decision": sum(1 for m in catalog if m.is_decision_model),
+                "loaded": [w.name for w in loaded],
+            },
+            "workers": [
+                {
+                    "name": w.name,
+                    "state": w.state,
+                    "pid": w.pid,
+                    "port": w.port,
+                    "inflight": w.inflight,
+                    "is_judge": w.is_judge,
+                    "log": w.log_path,
+                }
+                for w in manager.workers.values()
+            ],
+            "router": {
+                "enabled": router is not None,
+                "configured": app.state.router_config.load() is not None or router is not None,
+                "judge": router.judge.name if router is not None else None,
+                "backend": router.backend if router is not None else settings.router_backend,
+                "candidates": [m.name for m in router.candidates] if router is not None else [],
+            },
+            "gpu": _gpu_info(),
+        }
+
     @app.post("/api/chat")
     async def api_chat(request: Request):
         body = await _json_body(request)
-        info, requested, spec = await _resolve_with_spec(body)
+        info, requested, spec = await _resolve_with_spec(body, scope=request.scope)
         require(info, Capability.COMPLETION)
         _inject_ollama_spec(body, spec)
         shown = requested if spec else info.name  # virtual name back to the client
@@ -626,7 +801,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/generate")
     async def api_generate(request: Request):
         body = await _json_body(request)
-        info = await _resolve_model(body)
+        info = await _resolve_model(body, scope=request.scope)
         require(info, Capability.COMPLETION)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         async with manager.track(worker):
@@ -640,7 +815,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/embed")
     async def api_embed(request: Request):
         body = await _json_body(request)
-        info = await _resolve_model(body)
+        info = await _resolve_model(body, scope=request.scope)
         require(info, Capability.EMBEDDING)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         async with manager.track(worker):
@@ -656,7 +831,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/embeddings")
     async def api_embeddings(request: Request):
         body = await _json_body(request)
-        info = await _resolve_model(body)
+        info = await _resolve_model(body, scope=request.scope)
         require(info, Capability.EMBEDDING)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         async with manager.track(worker):
@@ -684,7 +859,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/chat/completions")
     async def v1_chat_completions(request: Request) -> Any:
         body = await _json_body(request)
-        info, requested, spec = await _resolve_with_spec(body)
+        info, requested, spec = await _resolve_with_spec(body, scope=request.scope)
         _inject_openai_spec(body, spec)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         async with manager.track(worker):
@@ -701,7 +876,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/completions")
     async def v1_completions(request: Request) -> Any:
         body = await _json_body(request)
-        info = await _resolve_model(body)
+        info = await _resolve_model(body, scope=request.scope)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         async with manager.track(worker):
             return await forward.openai_passthrough(worker, "/v1/completions", body)
@@ -709,7 +884,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/embeddings")
     async def v1_embeddings(request: Request) -> Any:
         body = await _json_body(request)
-        info = await _resolve_model(body)
+        info = await _resolve_model(body, scope=request.scope)
         worker = await ensure(info, forward.parse_keep_alive(body.get("keep_alive")))
         async with manager.track(worker):
             return await forward.openai_passthrough(worker, "/v1/embeddings", body)
@@ -768,7 +943,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def v1_messages(request: Request):
         body = await _json_body(request)
         try:
-            info, requested, spec = await _resolve_with_spec(body)  # aliases + 'auto' + created
+            info, requested, spec = await _resolve_with_spec(body, scope=request.scope)  # aliases + 'auto' + created
             require(info, Capability.COMPLETION)  # same guard as /api/chat
             _inject_anthropic_spec(body, spec)
             shown = requested if spec else info.name

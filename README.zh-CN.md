@@ -10,7 +10,9 @@
 >
 > **0.5.0：** Router 裁判升级为**决策模型**（System One）——一个小型常驻模型，通过*对候选选项打分*（而非自由文本）选出最合适的后端模型。两种裁判后端（默认 vLLM + logprob 打分；可选进程内 HuggingFace 单前向读出）、`nvllm route` 干跑（dry-run），许可证 **Apache-2.0 → MIT**。
 >
-> **0.6.0（本版本）：** 路由成为**可选、可激活**的能力。`nvllm router on` 扫描模型缓存中的 **System One 决策模型**（靠决策标记文件或名字中的 `decision` 识别——通用检测，绝不写死任何本地模型），让你挑选裁判——可选让一个已加载的本地模型给出**推荐**——并持久化选择；下次 `nvllm serve` 时裁判**常驻**运行，模型列表出现新的 **`AutoRouter`** 选项，选中它即把每个请求路由到最佳本地模型。`nvllm router off` / `nvllm router status` 用于停用与查看。发行改为 **Ollama 风格**：Release tarball 是小型源码包（几 MB、单 GitHub 资产），`install.sh` 在安装时通过 `pip` 拉取 vLLM 引擎——不再需要 2GB 分卷的捆绑 venv tarball。
+> **0.6.0：** 路由成为**可选、可激活**的能力。`nvllm router on` 扫描模型缓存中的 **System One 决策模型**（靠决策标记文件或名字中的 `decision` 识别——通用检测，绝不写死任何本地模型），让你挑选裁判——可选让一个已加载的本地模型给出**推荐**——并持久化选择；下次 `nvllm serve` 时裁判**常驻**运行，模型列表出现新的 **`AutoRouter`** 选项，选中它即把每个请求路由到最佳本地模型。`nvllm router off` / `nvllm router status` 用于停用与查看。发行改为 **Ollama 风格**：Release tarball 是小型源码包（几 MB、单 GitHub 资产），`install.sh` 在安装时通过 `pip` 拉取 vLLM 引擎——不再需要 2GB 分卷的捆绑 venv tarball。
+>
+> **0.7.0（本版本）：** **面向实际使用的可观测性。** 每个请求都会记录其模型解析（`requested → resolved`、状态码、时延；错误以 warning 级别记录）；服务在每个模型 worker 日志旁额外写一个**滚动**的 `service.log`；新增两条命令：`nvllm logs`（列出日志文件、查看尾部、`-f` 跟随）与 `nvllm doctor`（一眼看清环境 + 服务健康：GPU、模型、worker、路由、限制、路径）。
 
 为在 **DGX Spark (GB10)** 统一内存上以全速运行 **NVFP4 量化**模型而生。它从本地 HuggingFace hub 缓存中发现模型，在固定单一端口（默认 **8004**）上提供服务，并暴露 **Ollama**（`/api/*`）、**OpenAI**（`/v1/*`）和 **Anthropic**（`/v1/messages`）三套 API。每个模型各跑在自己的 `vllm serve` 子进程中，崩溃相互隔离，监督者可回收并重启。
 
@@ -40,6 +42,9 @@ nvllm launch codex exec "say hi"     # 用本地模型驱动 Codex CLI
 nvllm launch --list                  # 支持的 Agent + 可用性
 nvllm ps                             # 已加载（常驻）模型 + 保留期限
 nvllm stop nvidia/Qwen3-8B-NVFP4     # 卸载一个模型
+nvllm logs                           # 列出日志文件 + 查看服务日志尾部
+nvllm logs <model> -f                # 跟随一个日志（service.log 或某模型）
+nvllm doctor                         # 环境 + 服务健康报告
 nvllm version                        # CLI + 服务版本
 ```
 
@@ -271,7 +276,7 @@ gh release create 0.6.0 dist/nvllm-0.6.0-linux-aarch64.tar.gz --title "nvllm 0.6
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pip install "vllm==0.31.0"          # 引擎（验证基线）
-python -m pytest -q                 # 185 测试，无需 GPU
+python -m pytest -q                 # 205 测试，无需 GPU
 ```
 
 ## 快速开始
@@ -361,6 +366,8 @@ worker（`vllm serve` 子进程）无论 `--host` 如何都绑定 `127.0.0.1`，
 | 方法 | 路径 | API |
 |---|---|---|
 | GET | `/healthz`, `/api/version` | 元信息 |
+| GET | `/api/logs` | 可观测性 — 列出日志文件（`?name=<f>&lines=N` 返回某个文件的尾部） |
+| GET | `/api/doctor` | 可观测性 — 环境 + 服务健康快照（`nvllm doctor`） |
 | GET | `/api/tags` | Ollama — 列出模型 |
 | GET | `/api/ps` | Ollama — 已加载模型 |
 | POST | `/api/show` | Ollama — 模型信息 |
@@ -385,7 +392,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-测试套件（185 测试）使用伪造 HF hub 缓存和一个 OpenAI 兼容 worker 桩（含为 Router 返回 logprobs 的桩），因此无需 GPU 或真实 vLLM 安装即可运行——也在 CI 中跑。
+测试套件（205 测试）使用伪造 HF hub 缓存和一个 OpenAI 兼容 worker 桩（含为 Router 返回 logprobs 的桩），因此无需 GPU 或真实 vLLM 安装即可运行——也在 CI 中跑。
 
 ## NvLLM 是什么、借鉴什么、拉取什么
 
@@ -425,3 +432,4 @@ nvllm 以 **MIT License** 授权（见 [LICENSE](LICENSE)）。
 - **M12 (0.4.0 收尾)** — 深度复盘与优化：6 处正确性修复 + 4 处结构统一（143 tests）。✅
 - **M13 (0.5.0)** — Router 裁判成为**决策模型（System One）**：候选作为选项打分，选择从裁判在选项字母上的概率分布读出（默认 **vLLM + logprob** 后端，或进程内 **transformers** 单前向读出）；优雅回退链（logprob → 字母/文本 → 最大）；`nvllm route` 干跑 + `/api/route` 暴露分布；深度评审；**许可证 Apache-2.0 → MIT**；README 写清 NvLLM 是什么 / 借鉴 / 原创 / 拉取。DGX Spark 上对真实 0.8B 与 4B 决策模型端到端验证。✅
 - **M14 (0.6.0)** — 路由成为**可选、可激活的能力**：`nvllm router on` 扫描模型缓存中的 **System One 决策模型**（`decision_config.json`/`model_router.yaml` 等决策标记文件，或 `decision` 名字——通用，绝不写死本地模型），让你挑选裁判，并可**让一个已加载的本地模型读它们的元数据后推荐一个**；选择**持久化**（`state_dir()/router.json`），下次 `nvllm serve` 时裁判**常驻**运行，新的 **`AutoRouter`** 模型选项出现（`nvllm list`、`/api/tags`、`/v1/models`），把每个请求经常驻裁判路由；`nvllm router off` / `nvllm router status` 停用与查看；`POST /api/router` + `POST /api/router/recommend` 端点。0.5.0 的显式旗标路径（`--router-judge`）与隐藏的 `model: "auto"` 别名保留（旗标优先于持久化激活）。打包切换为 **Ollama 风格**：Release tarball 是小型源码包（几 MB、单 GitHub 资产），`install.sh` 安装时 `pip` 拉取 vLLM 引擎——取代 0.4.0 必须拆 2GB 分卷的捆绑 venv tarball。✅
+- **M15 (0.7.0)** — **面向实际使用的可观测性**：逐请求日志（requested → resolved 模型、状态码、时延；4xx/5xx 记为 warning/error）、与每个模型 worker 日志并存的滚动 `service.log`、`GET /api/logs`（列表 + 尾部，严格的路径穿越防护）与 `GET /api/doctor`（GPU / 模型 / worker / 路由 / 限制 / 路径，`nvidia-smi` 容错——GB10 这类统一内存 SoC 的 `[N/A]` 内存字段不会拖垮整份报告），外加 CLI `nvllm logs`（列表 / 尾部 / `-f` 跟随）与 `nvllm doctor` 一眼健康检查。+19 测试 → **205 tests green**。✅

@@ -182,8 +182,9 @@ def fake_hub(tmp_path: Path) -> Path:
 def settings(fake_hub: Path, tmp_path: Path):
     from nvllm_service.config import Settings
 
-    # state_root (the field) in tmp so `nvllm create` tests never touch the real home
-    return Settings(hf_hub_root=fake_hub, state_root=tmp_path / "state")
+    # state_root (the field) in tmp so `nvllm create` tests never touch the real home;
+    # log_dir in tmp too so /api/logs + `nvllm logs` tests read/write a scratch dir
+    return Settings(hf_hub_root=fake_hub, state_root=tmp_path / "state", log_dir=tmp_path / "logs")
 
 
 @pytest.fixture()

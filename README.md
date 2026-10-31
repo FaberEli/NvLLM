@@ -21,18 +21,26 @@ inference engine: one `nvllm` CLI, a resident model service, and local agents
 > one-forward-pass readout), a `nvllm route` dry-run, and the license moves
 > **Apache-2.0 → MIT**.
 >
-> **0.6.0 (this release):** routing is now an **opt-in, activatable
+> **0.6.0:** routing is now an **opt-in, activatable
 > capability**. `nvllm router on` scans your model cache for **System One
 > decision models** (detected by a decision-marker file or a `decision` name —
 > generic, never a hardcoded local model), lets you
 > pick the judge — with an optional **recommendation** from an already-loaded
-> local model — and persists the choice so that on the next `nvllm serve` the
-> judge runs **resident** and a new **`AutoRouter`** option appears in the model
+> local model — and persists the choice so that the next `nvllm serve` runs the
+> judge **resident** and a new **`AutoRouter`** option appears in the model
 > list; selecting it routes each request to the best local model. `nvllm router
 > off` / `nvllm router status` deactivate and inspect it. Packaging is now
 > **Ollama-style**: the Release tarball is a small source bundle (a few MB,
 > single GitHub asset) and `install.sh` pulls the vLLM engine via `pip` at
 > install time — no more 2 GB-split, bundled-venv tarball.
+>
+> **0.7.0 (this release):** **observability for real-world use.** Every request
+> is now logged with its model resolution (`requested → resolved`, status,
+> latency; errors at warning level); the service also writes a rotating
+> `service.log` next to the per-model worker logs; and two new commands:
+> `nvllm logs` (list log files, tail one, `-f` follow) and `nvllm doctor`
+> (one-glance environment + service health: GPU, models, workers, router,
+> limits, paths).
 
 Built to serve **NVFP4-quantized** models at full speed on **DGX Spark (GB10)**
 unified memory. It discovers models from your local HuggingFace hub cache,
@@ -74,6 +82,9 @@ nvllm launch codex exec "say hi"     # run Codex CLI on the local models
 nvllm launch --list                  # supported agents + availability
 nvllm ps                             # loaded (resident) models + UNTIL
 nvllm stop nvidia/Qwen3-8B-NVFP4     # unload a model
+nvllm logs                           # list log files + tail the service log
+nvllm logs <model> -f                # follow one log (service.log or a model)
+nvllm doctor                         # environment + service health report
 nvllm version                        # CLI + server version
 ```
 
@@ -401,7 +412,7 @@ Work from the repo with an editable venv instead:
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pip install "vllm==0.31.0"          # the engine (validated baseline)
-python -m pytest -q                 # 185 tests, no GPU needed
+python -m pytest -q                 # 205 tests, no GPU needed
 ```
 
 ## Quickstart
@@ -523,6 +534,8 @@ Workers (the `vllm serve` subprocesses) always bind `127.0.0.1` regardless of
 | Method | Path | API |
 |---|---|---|
 | GET | `/healthz`, `/api/version` | meta |
+| GET | `/api/logs` | observability — list log files (`?name=<f>&lines=N` returns the tail of one) |
+| GET | `/api/doctor` | observability — environment + service health snapshot (`nvllm doctor`) |
 | GET | `/api/tags` | Ollama — list models |
 | GET | `/api/ps` | Ollama — loaded models |
 | POST | `/api/show` | Ollama — model info |
@@ -547,7 +560,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-The suite (185 tests) uses a fake HF hub cache and a stub OpenAI-compatible
+The suite (205 tests) uses a fake HF hub cache and a stub OpenAI-compatible
 worker (including a logprobs-returning stub for the Router), so it runs without a
 GPU or a real vLLM install — it also runs in CI.
 
@@ -659,3 +672,11 @@ use.
   the Release tarball is a small source bundle (a few MB, single GitHub asset)
   and `install.sh` pulls the vLLM engine via `pip` at install time — replacing
   the 0.4.0 bundled-venv tarball that had to be split into 2 GB parts. ✅
+- **M15 (0.7.0)** — **observability for real-world use**: per-request logging
+  (requested → resolved model, status, latency; 4xx/5xx at warning/error), a
+  rotating `service.log` alongside the per-model worker logs, `GET /api/logs`
+  (list + tail, strict path-traversal guard) and `GET /api/doctor`
+  (GPU / models / workers / router / limits / paths, `nvidia-smi`-permissive so
+  unified-memory SoCs like the GB10 don't sink the report), plus the CLI
+  `nvllm logs` (list / tail / `-f` follow) and `nvllm doctor` one-glance health
+  check. +19 tests → **205 tests green**. ✅

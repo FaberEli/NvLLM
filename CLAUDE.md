@@ -16,7 +16,7 @@ tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
 
 ## Running
 
-- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (185 tests)
+- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (205 tests)
 - Dev server (default bind `0.0.0.0:8004`): `nvllm serve` or
   `.venv/bin/python -m nvllm_service serve --hf-hub-root <cache>`
 - **Single entry (0.3.0, breaking):** `nvllm` (= `nvllm_service.cli:main`) and
@@ -130,6 +130,23 @@ tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
   is handled in the routing branch only). ⚠️ closure note: activation is
   "next `serve`" (router built once in `create_app`), so `_route`/`ensure`
   capture the router by closure var without needing runtime re-binding.
+  **Observability (0.7.0):** a request-log middleware (registered after CORS)
+  writes one line per request — `METHOD PATH -> status in N ms requested=… model=…` —
+  INFO normally, WARNING on 4xx, ERROR on 5xx. The model-resolution context is
+  carried out via the shared `request.scope` dict: `_resolve_model` /
+  `_resolve_with_spec` take a `scope=request.scope` arg and set
+  `scope["nvllm_route"] = {"requested", "model"}` (the spec path rewrites
+  `requested` back to the virtual name it preserved) — ⚠️ contextvars set in the
+  endpoint do **not** propagate to the middleware frame, the scope dict does.
+  `GET /api/logs` lists `*.log` in `settings.logs_dir()` (name/bytes/modified) and
+  tails one file: `name` is validated (basename only — no `/`, `..`, dotfiles,
+  non-`.log` → 400; missing → 404), `lines` clamped 1–1000; `_tail_lines` scans
+  backwards in 64 KiB blocks so memory stays O(n lines). `GET /api/doctor`
+  returns a snapshot: version, settings (port/limits/hub_root/logs_dir/state_dir),
+  models (total/supported/decision/loaded), workers (state/pid/port/inflight/is_judge/log),
+  router (enabled/configured/judge/backend/candidates), and GPU via `nvidia-smi`
+  (`_gpu_info` is permissive — GB10 unified memory reports `[N/A]` → `None`,
+  never an error; returns `None` if the binary is absent, e.g. in CI).
   **Virtual models (0.4.0):** `app.state.created = CreatedStore(...)`;
   `_resolve_with_spec(body)` = alias/auto resolution + created-model check
   (virtual name → rewrite `body["model"]` to the base; returns the
@@ -187,8 +204,15 @@ tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
   `client.cmd_router`; `on` takes `--judge` / `--candidates` / `--backend` /
   `--top-logprobs` / `--no-recommend`, mirroring the serve flags and persisting
   to `router.json`; `status` distinguishes ACTIVE / CONFIGURED / not-activated).
+  **0.7.0:** `logs [name] [-n N] [-f]` (list service/worker logs or tail one →
+  `client.cmd_logs` → `GET /api/logs`; no name = list, then tail `service.log` or the
+  newest; `-f` polls every 1 s and re-syncs on window overrun) and `doctor`
+  (`client.cmd_doctor` → `GET /api/doctor` → one screen: GPU / models / workers /
+  router / limits / paths). `run_server` calls `attach_file_logging(s.logs_dir())`
+  (rotating handler on the root logger, 10 MB × 3 → `service.log`) **before** the
+  vLLM preflight, so startup logs land in the file too.
 - `client.py` — the Ollama-style client commands (list/ps/show/run/stop/version/
-  create/rm/route/router). Synchronous `httpx` (CLI is a foreground process; no event loop).
+  create/rm/route/router/logs/doctor). Synchronous `httpx` (CLI is a foreground process; no event loop).
   `repl()` takes injectable `in_fn`/`out_fn` so tests script the whole session.
   **0.6.0:** `cmd_router(url, action, *, judge, candidates, backend, top_logprobs,
   recommend, in_fn, out_fn)` — `status`/`off` are simple GET/POST; `on` does
@@ -203,6 +227,10 @@ tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
   check runs **before** the slash-command check — image paths start with `/`).
   **0.5.0:** `cmd_route(url, text)` — POST `/api/route`, prints the chosen model +
   the judge's probability distribution.
+  **0.7.0:** `cmd_logs(url, name=None, lines=50, follow=False)` (no name →
+  `GET /api/logs` list then tail `service.log`/newest; named → tail it; `-f` →
+  `_follow_logs` polls 1 s, prints new lines, re-syncs the tail on window overrun)
+  and `cmd_doctor(url)` (one-screen report from `GET /api/doctor`).
 - `launch.py` — `nvllm launch`: agent registry (`AGENTS`: claude/codex/qwen/
   gemini/opencode/aider) as pure data (env + args templates with `<base>`/`<model>`/
   `<alias>` placeholders) + shared exec path. Adding an agent = one `Agent(...)` entry.
