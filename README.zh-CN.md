@@ -251,13 +251,13 @@ Release tarball 现在是**小型**的（nvllm 源码 + 安装器，几 MB）。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash
-curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash --with-service
+curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash -s -- --with-service
 ```
 
 在任意 Linux 机器上构建 tarball（此处不需要 vLLM/torch——只暂存源码，几秒完成）：
 
 ```bash
-scripts/build-release.sh        # → dist/nvllm-0.6.0-linux-aarch64.tar.gz（几 MB）
+scripts/build-release.sh        # → dist/nvllm-0.7.0-linux-aarch64.tar.gz（几 MB）
 ```
 
 然后把这**单个**资产上传到 GitHub Release——体积小，无需分卷（永不触及 GitHub 单资产 2GB 上限）：

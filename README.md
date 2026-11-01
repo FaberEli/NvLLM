@@ -384,14 +384,14 @@ auto-detects a sibling `venv/` and skips pip if one is bundled (backward-compat)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash
-curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash --with-service
+curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash -s -- --with-service
 ```
 
 Build the tarball on any Linux machine (no vLLM/torch needed here — it only
 stages source, so it finishes in seconds):
 
 ```bash
-scripts/build-release.sh        # → dist/nvllm-0.6.0-linux-aarch64.tar.gz (a few MB)
+scripts/build-release.sh        # → dist/nvllm-0.7.0-linux-aarch64.tar.gz (a few MB)
 ```
 
 then upload that **single** asset to a GitHub Release — the small size means no
