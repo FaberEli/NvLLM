@@ -12,7 +12,15 @@
 >
 > **0.6.0：** 路由成为**可选、可激活**的能力。`nvllm router on` 扫描模型缓存中的 **System One 决策模型**（靠决策标记文件或名字中的 `decision` 识别——通用检测，绝不写死任何本地模型），让你挑选裁判——可选让一个已加载的本地模型给出**推荐**——并持久化选择；下次 `nvllm serve` 时裁判**常驻**运行，模型列表出现新的 **`AutoRouter`** 选项，选中它即把每个请求路由到最佳本地模型。`nvllm router off` / `nvllm router status` 用于停用与查看。发行改为 **Ollama 风格**：Release tarball 是小型源码包（几 MB、单 GitHub 资产），`install.sh` 在安装时通过 `pip` 拉取 vLLM 引擎——不再需要 2GB 分卷的捆绑 venv tarball。
 >
-> **0.7.0（本版本）：** **面向实际使用的可观测性。** 每个请求都会记录其模型解析（`requested → resolved`、状态码、时延；错误以 warning 级别记录）；服务在每个模型 worker 日志旁额外写一个**滚动**的 `service.log`；新增两条命令：`nvllm logs`（列出日志文件、查看尾部、`-f` 跟随）与 `nvllm doctor`（一眼看清环境 + 服务健康：GPU、模型、worker、路由、限制、路径）。
+> **0.7.0：** **面向实际使用的可观测性。** 每个请求都会记录其模型解析（`requested → resolved`、状态码、时延；错误以 warning 级别记录）；服务在每个模型 worker 日志旁额外写一个**滚动**的 `service.log`；新增两条命令：`nvllm logs`（列出日志文件、查看尾部、`-f` 跟随）与 `nvllm doctor`（一眼看清环境 + 服务健康：GPU、模型、worker、路由、限制、路径）。
+>
+> **0.8.0（本版本）：** **常驻服务成为默认。** 裸 `curl | bash`（或 `install.sh`）
+> 开箱即**安装并启用** systemd **用户**服务——NvLLM 本就是常驻推理服务，这是合理默认
+> （`--no-service` 可退出，如容器/CI；`--with-service` 保留为兼容空操作）。新增
+> **`nvllm daemon`** 命令在 CLI 里管理服务——`install | status | start | stop |
+> restart | uninstall`——(重新)加装服务不再需要跑安装器。unit 模板单一事实来源
+> （`nvllm_service/daemon.py`），`install.sh` 委托给它。未知命令给出拼写建议
+> （`nvllm sever` → `did you mean 'serve'?`）。
 
 为在 **DGX Spark (GB10)** 统一内存上以全速运行 **NVFP4 量化**模型而生。它从本地 HuggingFace hub 缓存中发现模型，在固定单一端口（默认 **8004**）上提供服务，并暴露 **Ollama**（`/api/*`）、**OpenAI**（`/v1/*`）和 **Anthropic**（`/v1/messages`）三套 API。每个模型各跑在自己的 `vllm serve` 子进程中，崩溃相互隔离，监督者可回收并重启。
 
@@ -23,7 +31,8 @@
 使用手感与 Ollama 一致——`nvllm <command>`——同时保留 NvLLM 自身特质：**模型来自本地 HuggingFace 缓存**（发现而非下载），模型名为 `org/name[:tag]`。
 
 ```bash
-nvllm serve                          # 启动服务（前台）
+nvllm serve                          # 前台启动服务（无 systemd 时）
+nvllm daemon status                  # systemd 用户服务：install|status|start|stop|restart|uninstall
 nvllm list                           # 本地 HF 缓存中的模型（表格）
 nvllm list nvidia/Qwen               # …按名称前缀过滤
 nvllm show nvidia/Qwen3-8B-NVFP4     # 详情：家族、参数量、量化、上下文、能力
@@ -99,7 +108,8 @@ nvllm run <模型> --tools tools.json "查一下北京的天气"      # OpenAI �
 
 | nvllm | ollama | 说明 |
 |---|---|---|
-| `nvllm serve` | `ollama serve` | 启动服务 |
+| `nvllm serve` | `ollama serve` | 前台启动服务 |
+| `nvllm daemon …` | — | NvLLM 独有：安装 / 启动 / 停止 / 查看 systemd 用户服务（0.8.0 起默认安装） |
 | `nvllm list` | `ollama list` | NvLLM 列出**本地 HF 缓存**；Ollama 列出从注册表下载的模型 |
 | `nvllm run` | `ollama run` | 一次性提问或交互式 REPL |
 | `nvllm ps` | `ollama ps` | 已加载的模型 |
@@ -225,9 +235,11 @@ git clone https://github.com/FaberEli/NvLLM.git && cd NvLLM
 2. **拉取 vLLM 引擎**——锁定验证基线 **`vllm==0.31.0`**（含 CUDA 13.0 的匹配 torch 构建）；`--vllm-version V` 覆盖；
 3. 安装 `nvllm` CLI + 其（少量）Python 依赖；
 4. 把 `nvllm` 软链进 `~/.local/bin`（自动清理旧的 `nvllm-serve` 链接）；
-5. 可选安装 systemd **用户**服务（自启、崩溃重启）：`./scripts/install.sh --with-service`。
+5. 安装并启用 systemd **用户**服务（自启、崩溃重启）——**0.8.0 起的默认**，
+   因为 NvLLM 是常驻服务；`--no-service` 可跳过（容器/CI）。无 systemd 时安装
+   仍会成功——改用前台 `nvllm serve` 即可。
 
-幂等——重复执行即就地升级。
+幂等——重复执行即就地升级（并会重建服务）。
 
 ### 更新
 
@@ -251,13 +263,14 @@ Release tarball 现在是**小型**的（nvllm 源码 + 安装器，几 MB）。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash
-curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash -s -- --with-service
+# …或不装 systemd 用户服务（容器/CI）：
+curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash -s -- --no-service
 ```
 
 在任意 Linux 机器上构建 tarball（此处不需要 vLLM/torch——只暂存源码，几秒完成）：
 
 ```bash
-scripts/build-release.sh        # → dist/nvllm-0.7.0-linux-aarch64.tar.gz（几 MB）
+scripts/build-release.sh        # → dist/nvllm-0.8.0-linux-aarch64.tar.gz（几 MB）
 ```
 
 然后把这**单个**资产上传到 GitHub Release——体积小，无需分卷（永不触及 GitHub 单资产 2GB 上限）：
@@ -266,7 +279,21 @@ scripts/build-release.sh        # → dist/nvllm-0.7.0-linux-aarch64.tar.gz（�
 gh release create 0.6.0 dist/nvllm-0.6.0-linux-aarch64.tar.gz --title "nvllm 0.6.0"
 ```
 
-可调项：`NVLLM_VERSION`、`NVLLM_RELEASE_URL`、`NVLLM_HOME`；额外参数（如 `--with-service`）透传给安装器。
+可调项：`NVLLM_VERSION`、`NVLLM_RELEASE_URL`、`NVLLM_HOME`；额外参数（如 `--no-service`）透传给安装器。
+
+### 管理常驻服务（`nvllm daemon`）
+
+服务是 systemd **用户**单元（`~/.config/systemd/user/nvllm.service`），运行
+`nvllm serve`——自启、崩溃重启。0.8.0 起安装器默认装好；之后用这条命令管理。
+它是**本地命令**——不需要服务正在运行：
+
+```bash
+nvllm daemon install      # (重新)安装 + 启用 + 启动（如 --no-service 安装后补装）
+nvllm daemon status       # 装了没？启用了没？在跑吗？
+nvllm daemon restart      # …或：start | stop
+nvllm daemon uninstall    # 停用 + 删除单元
+systemctl --user status nvllm    # 也可以直接看 systemd 原始状态
+```
 
 ### 开发安装
 
@@ -276,14 +303,13 @@ gh release create 0.6.0 dist/nvllm-0.6.0-linux-aarch64.tar.gz --title "nvllm 0.6
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pip install "vllm==0.31.0"          # 引擎（验证基线）
-python -m pytest -q                 # 205 测试，无需 GPU
+python -m pytest -q                 # 219 测试，无需 GPU
 ```
 
 ## 快速开始
 
-```bash
-nvllm serve          # 默认绑定 0.0.0.0:8004
-```
+安装器已经让服务在运行了（0.8.0+）——直接用即可。
+（无 systemd 的容器环境？前台跑 `nvllm serve`——默认绑定 `0.0.0.0:8004`。）
 
 然后用 CLI 或原生 HTTP：
 
@@ -433,3 +459,4 @@ nvllm 以 **MIT License** 授权（见 [LICENSE](LICENSE)）。
 - **M13 (0.5.0)** — Router 裁判成为**决策模型（System One）**：候选作为选项打分，选择从裁判在选项字母上的概率分布读出（默认 **vLLM + logprob** 后端，或进程内 **transformers** 单前向读出）；优雅回退链（logprob → 字母/文本 → 最大）；`nvllm route` 干跑 + `/api/route` 暴露分布；深度评审；**许可证 Apache-2.0 → MIT**；README 写清 NvLLM 是什么 / 借鉴 / 原创 / 拉取。DGX Spark 上对真实 0.8B 与 4B 决策模型端到端验证。✅
 - **M14 (0.6.0)** — 路由成为**可选、可激活的能力**：`nvllm router on` 扫描模型缓存中的 **System One 决策模型**（`decision_config.json`/`model_router.yaml` 等决策标记文件，或 `decision` 名字——通用，绝不写死本地模型），让你挑选裁判，并可**让一个已加载的本地模型读它们的元数据后推荐一个**；选择**持久化**（`state_dir()/router.json`），下次 `nvllm serve` 时裁判**常驻**运行，新的 **`AutoRouter`** 模型选项出现（`nvllm list`、`/api/tags`、`/v1/models`），把每个请求经常驻裁判路由；`nvllm router off` / `nvllm router status` 停用与查看；`POST /api/router` + `POST /api/router/recommend` 端点。0.5.0 的显式旗标路径（`--router-judge`）与隐藏的 `model: "auto"` 别名保留（旗标优先于持久化激活）。打包切换为 **Ollama 风格**：Release tarball 是小型源码包（几 MB、单 GitHub 资产），`install.sh` 安装时 `pip` 拉取 vLLM 引擎——取代 0.4.0 必须拆 2GB 分卷的捆绑 venv tarball。✅
 - **M15 (0.7.0)** — **面向实际使用的可观测性**：逐请求日志（requested → resolved 模型、状态码、时延；4xx/5xx 记为 warning/error）、与每个模型 worker 日志并存的滚动 `service.log`、`GET /api/logs`（列表 + 尾部，严格的路径穿越防护）与 `GET /api/doctor`（GPU / 模型 / worker / 路由 / 限制 / 路径，`nvidia-smi` 容错——GB10 这类统一内存 SoC 的 `[N/A]` 内存字段不会拖垮整份报告），外加 CLI `nvllm logs`（列表 / 尾部 / `-f` 跟随）与 `nvllm doctor` 一眼健康检查。+19 测试 → **205 tests green**。✅
+- **M16 (0.8.0)** — **常驻服务默认化 + CLI 服务管理**（源于真实使用摩擦：一行安装后服务缺失且无 CLI 途径补救）：裸 `curl|bash` / `install.sh` 默认**安装并启用** systemd 用户服务（`--no-service` 逃生，容器/CI；`--with-service` 保留为兼容空操作）；新增 `nvllm daemon install|status|start|stop|restart|uninstall`（**本地命令**；unit 模板单一事实来源 `nvllm_service/daemon.py`，`install.sh` 委托之；无 systemd 时告警不失败）；`install.json` 的 `service` 字段记录真实结果；未知命令给出 did-you-mean 建议（`nvllm sever` → `serve`——覆盖不在 argparse 子命令表里的特判命令）。+14 测试 → **219 tests green**。✅

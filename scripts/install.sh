@@ -9,7 +9,9 @@
 #   scripts/install.sh [options]
 #     --vllm-version V    pin vLLM to V (default: 0.31.0, validated on DGX Spark)
 #     --port P            service port recorded for the systemd unit (default: 8004)
-#     --with-service      install + enable a systemd *user* service (autostart, restart-on-crash)
+#     --no-service        do NOT install the systemd user service (containers/CI) —
+#                         since 0.8.0 the service is the DEFAULT (NvLLM is a resident
+#                         service); `--with-service` is kept as a back-compat no-op
 #     --python PATH       interpreter to use (default: python3)
 #     --dry-run           print the steps without executing
 #     --yes               skip confirmation prompts
@@ -32,12 +34,14 @@ ROOT="${NVLLM_HOME:-$HOME/.nvllm}"
 VLLM_VERSION="${NVLLM_VLLM_VERSION:-0.31.0}"
 PORT="${NVLLM_PORT:-8004}"
 PYTHON_OVERRIDE="${PYTHON:-}"
-WITH_SERVICE=0
+# 0.8.0: the resident systemd user service is the DEFAULT install mode —
+# NvLLM is a resident inference service. --no-service opts out (containers/CI).
+WITH_SERVICE=1
 DRY_RUN=0
 ASSUME_YES=0
 
 # ------------------------------------------------------------------ usage ---
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
 
 log()  { printf '\033[1;34m[nvllm]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[nvllm] warning:\033[0m %s\n' "$*" >&2; }
@@ -61,7 +65,8 @@ while [ $# -gt 0 ]; do
     --port=*) PORT="${1#*=}"; shift ;;
     --python) PYTHON_OVERRIDE="${2:?--python needs a value}"; shift 2 ;;
     --python=*) PYTHON_OVERRIDE="${1#*=}"; shift ;;
-    --with-service) WITH_SERVICE=1; shift ;;
+    --with-service) WITH_SERVICE=1; shift ;;   # back-compat no-op (default since 0.8.0)
+    --no-service) WITH_SERVICE=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --yes) ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -215,40 +220,28 @@ case ":$PATH:" in
 esac
 
 # ------------------------------------------------------------------ systemd ---
+# (0.8.0) the resident service is the DEFAULT. install.sh delegates to
+# `nvllm daemon install` so the unit template has one source of truth
+# (nvllm_service/daemon.py). Best-effort: no systemd (container/CI) is a
+# warning, not a failure — the foreground path (`nvllm serve`) still works.
 # retire the legacy nvllm-serve unit if present (it would double-start)
 LEGACY_UNIT="$HOME/.config/systemd/user/nvllm-serve.service"
 if [ -f "$LEGACY_UNIT" ]; then
   systemctl --user disable --now nvllm-serve 2>/dev/null || true
   rm -f "$LEGACY_UNIT"
 fi
-UNIT_FILE="$HOME/.config/systemd/user/nvllm.service"
+SERVICE_OK=0
 if [ "$WITH_SERVICE" -eq 1 ]; then
-  log "writing systemd user unit: $UNIT_FILE"
-  if [ "$DRY_RUN" -ne 1 ]; then
-    mkdir -p "$HOME/.config/systemd/user"
-    cat > "$UNIT_FILE" <<EOF
-[Unit]
-Description=nvllm — resident LLM inference service (vLLM backend)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=$ROOT/venv/bin/nvllm serve --port $PORT
-Environment=NVLLM_LOG_DIR=$ROOT/logs
-Environment=NVLLM_STATE_DIR=$ROOT/state
-Environment=NVLLM_WORKER_MAX_JOBS=2
-WorkingDirectory=$ROOT
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOF
-    systemctl --user daemon-reload
-    systemctl --user enable --now nvllm
-    log "systemd user service enabled and started"
-    echo "    Tip: run 'loginctl enable-linger $USER' so it starts at boot without a login session."
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "(dry-run) would install + enable the systemd user service (nvllm daemon install --port $PORT)"
+  elif "$ROOT/venv/bin/nvllm" daemon install --port "$PORT"; then
+    SERVICE_OK=1
+  else
+    warn "systemd user service not installed (no systemd user session? container?)"
+    warn "start it manually:  nvllm serve       (or later: nvllm daemon install)"
   fi
+else
+  log "skipping the systemd user service (--no-service)"
 fi
 
 # -------------------------------------------------------------- install.json ---
@@ -258,7 +251,7 @@ if [ -d "$REPO_ROOT/.git" ] && command -v git >/dev/null 2>&1; then
 fi
 if [ "$DRY_RUN" -ne 1 ]; then
   PYTHON="$PYTHON" ROOT="$ROOT" REPO_ROOT="$REPO_ROOT" VLLM_VERSION="$VLLM_VERSION" \
-  PORT="$PORT" WITH_SERVICE="$WITH_SERVICE" GIT_URL="$GIT_URL" PYVER="$PYVER" \
+  PORT="$PORT" WITH_SERVICE="$SERVICE_OK" GIT_URL="$GIT_URL" PYVER="$PYVER" \
   PREBUILT="$PREBUILT" \
   "$PYTHON" - <<'PY'
 import json, os, datetime
@@ -281,6 +274,13 @@ PY
 fi
 
 # -------------------------------------------------------------------- summary ---
+if [ "$SERVICE_OK" -eq 1 ]; then
+  STEP2="  2. The service is already running (systemd user unit 'nvllm'):"
+  STEP2H="       nvllm list        (or: systemctl --user status nvllm)"
+else
+  STEP2="  2. Start the service:"
+  STEP2H="       nvllm serve       (foreground)     or:  nvllm daemon install"
+fi
 cat <<EOF
 
 ============================================================
@@ -292,8 +292,8 @@ Next steps
   1. Get an NVFP4 model into your HF cache, e.g.:
        pip install -U "huggingface_hub[cli]"   (or: pip install huggingface_hub)
        hf download nvidia/Llama-3.1-8B-Instruct-NVFP4
-  2. Start the service (or: systemctl --user status nvllm):
-       nvllm serve
+$STEP2
+$STEP2H
   3. Verify:
        curl -s localhost:$PORT/api/tags | jq
        curl -s localhost:$PORT/v1/chat/completions -d '{

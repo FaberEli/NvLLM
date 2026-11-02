@@ -19,9 +19,10 @@
 #   NVLLM_RELEASE_BASE   download base (default: GitHub releases of FaberEli/NvLLM)
 #   NVLLM_HOME           install root (default: ~/.nvllm)
 #
-# Extra arguments are passed through to install.sh:
-#   curl -fsSL … | bash -s -- --with-service   # also install the systemd user service
-#                                            # (args for the piped script go after `bash -s --`)
+# Extra arguments are passed through to install.sh (args for a piped script
+# go after `bash -s --`):
+#   curl -fsSL … | bash                      # installs the service too (default since 0.8.0)
+#   curl -fsSL … | bash -s -- --no-service   # …or skip the systemd user service (containers/CI)
 
 set -euo pipefail
 

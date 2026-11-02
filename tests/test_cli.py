@@ -239,7 +239,7 @@ def test_help(capsys):
     rc = cli.main(["help"])
     out = capsys.readouterr().out
     assert rc == 0
-    for token in ("nvllm serve", "nvllm list", "nvllm run", "nvllm launch", "nvllm stop", "NVLLM_SERVER"):
+    for token in ("nvllm serve", "nvllm daemon", "nvllm list", "nvllm run", "nvllm launch", "nvllm stop", "NVLLM_SERVER"):
         assert token in out
 
 
@@ -248,6 +248,25 @@ def test_no_args_prints_help(capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "nvllm serve" in out
+
+
+# ---- did-you-mean (unknown commands) -------------------------------------------
+# serve/daemon are special-cased in main() (not argparse subparsers), so the
+# suggestion must cover them too — this is the `nvllm sever` case.
+
+
+def test_unknown_command_suggests_serve(capsys):
+    rc = cli.main(["sever"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "did you mean 'serve'" in err
+
+
+def test_unknown_command_suggests_daemon(capsys):
+    rc = cli.main(["damon"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "did you mean 'daemon'" in err
 
 
 def test_launch_list_via_cli(capsys):

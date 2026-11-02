@@ -34,13 +34,24 @@ inference engine: one `nvllm` CLI, a resident model service, and local agents
 > single GitHub asset) and `install.sh` pulls the vLLM engine via `pip` at
 > install time — no more 2 GB-split, bundled-venv tarball.
 >
-> **0.7.0 (this release):** **observability for real-world use.** Every request
+> **0.7.0:** **observability for real-world use.** Every request
 > is now logged with its model resolution (`requested → resolved`, status,
 > latency; errors at warning level); the service also writes a rotating
 > `service.log` next to the per-model worker logs; and two new commands:
 > `nvllm logs` (list log files, tail one, `-f` follow) and `nvllm doctor`
 > (one-glance environment + service health: GPU, models, workers, router,
 > limits, paths).
+>
+> **0.8.0 (this release):** **the resident service is now the default.** A
+> plain `curl | bash` (or `install.sh`) installs *and enables* the systemd
+> **user** service out of the box — NvLLM is a resident inference service, so
+> that is the sensible default (`--no-service` opts out, e.g. containers/CI;
+> `--with-service` is kept as a back-compat no-op). New **`nvllm daemon`**
+> command manages the service from the CLI — `install | status | start | stop |
+> restart | uninstall` — so (re)adding the service never needs the installer
+> again. The unit template has one source of truth (`nvllm_service/daemon.py`),
+> which `install.sh` delegates to. Unknown commands get a did-you-mean hint
+> (`nvllm sever` → `did you mean 'serve'?`).
 
 Built to serve **NVFP4-quantized** models at full speed on **DGX Spark (GB10)**
 unified memory. It discovers models from your local HuggingFace hub cache,
@@ -63,7 +74,8 @@ traits: **models come from your local HuggingFace cache** (discovered, not
 downloaded), and model names are `org/name[:tag]`.
 
 ```bash
-nvllm serve                          # start the service (foreground)
+nvllm serve                          # start the service in the foreground (no systemd)
+nvllm daemon status                  # systemd user service: install|status|start|stop|restart|uninstall
 nvllm list                           # models in the local HF cache (table)
 nvllm list nvidia/Qwen               # …filtered by name prefix
 nvllm show nvidia/Qwen3-8B-NVFP4     # details: family, params, quant, context, capabilities
@@ -164,7 +176,8 @@ include them.
 
 | nvllm | ollama | note |
 |---|---|---|
-| `nvllm serve` | `ollama serve` | start the server |
+| `nvllm serve` | `ollama serve` | start the server (foreground) |
+| `nvllm daemon …` | — | NvLLM-only: install / start / stop / inspect the systemd user service (installed by default since 0.8.0) |
 | `nvllm list` | `ollama list` | NvLLM lists the **local HF cache**; Ollama lists registry-downloaded models |
 | `nvllm run` | `ollama run` | one-shot prompt or interactive REPL |
 | `nvllm ps` | `ollama ps` | loaded models |
@@ -350,10 +363,13 @@ The installer:
    (with its matching torch build for CUDA 13.0); override with `--vllm-version V`;
 3. installs the `nvllm` CLI + its (small) Python dependencies;
 4. symlinks `nvllm` into `~/.local/bin` (retiring any legacy `nvllm-serve` link);
-5. optionally installs a systemd **user** service (autostart, restart-on-crash):
-   `./scripts/install.sh --with-service`.
+5. installs + enables a systemd **user** service (autostart, restart-on-crash) —
+   **the default since 0.8.0**, because NvLLM is a resident service. Pass
+   `--no-service` to skip it (containers/CI). Without systemd the install still
+   succeeds — run `nvllm serve` in the foreground instead.
 
-It is idempotent — re-running it upgrades in place.
+It is idempotent — re-running it upgrades in place (and re-establishes the
+service).
 
 ### Updating
 
@@ -384,7 +400,8 @@ auto-detects a sibling `venv/` and skips pip if one is bundled (backward-compat)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash
-curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash -s -- --with-service
+# …or without the systemd user service (containers/CI):
+curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash -s -- --no-service
 ```
 
 Build the tarball on any Linux machine (no vLLM/torch needed here — it only
@@ -402,7 +419,22 @@ gh release create 0.6.0 dist/nvllm-0.6.0-linux-aarch64.tar.gz --title "nvllm 0.6
 ```
 
 Knobs: `NVLLM_VERSION`, `NVLLM_RELEASE_URL`, `NVLLM_HOME`; extra args
-(e.g. `--with-service`) pass through to the installer.
+(e.g. `--no-service`) pass through to the installer.
+
+### Managing the resident service (`nvllm daemon`)
+
+The service is a systemd **user** unit (`~/.config/systemd/user/nvllm.service`)
+running `nvllm serve` — autostart and restart-on-crash. Since 0.8.0 the
+installer sets it up by default; this command is how you manage it afterwards.
+It is a **local** command — it needs no running server:
+
+```bash
+nvllm daemon install      # (re)install + enable + start (e.g. after a --no-service install)
+nvllm daemon status       # installed? enabled? active?
+nvllm daemon restart      # …or: start | stop
+nvllm daemon uninstall    # disable + remove the unit
+systemctl --user status nvllm    # the raw systemd view, if you prefer
+```
 
 ### Development install
 
@@ -417,11 +449,11 @@ python -m pytest -q                 # 205 tests, no GPU needed
 
 ## Quickstart
 
-```bash
-nvllm serve          # default bind is 0.0.0.0:8004
-```
+The installer already left the service running (0.8.0+) — just use it.
+(No systemd, e.g. a container? Run `nvllm serve` in the foreground — default
+bind is `0.0.0.0:8004`.)
 
-Then, with the CLI or plain HTTP:
+With the CLI or plain HTTP:
 
 ```bash
 nvllm list

@@ -7,6 +7,7 @@ version. No arguments prints help.
 from __future__ import annotations
 
 import argparse
+import difflib
 import logging
 import os
 import shutil
@@ -14,7 +15,7 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from . import __version__, client, launch
+from . import __version__, client, daemon, launch
 from .config import Settings
 from .main import create_app
 
@@ -144,12 +145,24 @@ _REFUSALS: dict[str, str] = {
     ),
 }
 
+# Every top-level command (for did-you-mean suggestions). Keep in sync with
+# main()'s special cases (serve/daemon/help) + _build_parser()'s subparsers.
+_COMMANDS = (
+    "serve", "daemon", "help",
+    "list", "ls", "ps", "show", "run", "create", "rm",
+    "route", "router", "launch", "stop", "logs", "doctor", "version",
+    "pull", "push", "login", "cp",  # _REFUSALS above (print guidance)
+)
+
 _TOP_HELP = f"""\
 NvLLM — Ollama-style CLI for models in your local HuggingFace cache
 (backend: vLLM workers managed by the nvllm server)
 
 Usage:
-  nvllm serve [flags]         start the server (see `nvllm serve --help`)
+  nvllm serve [flags]         start the server in the foreground (see `nvllm serve --help`)
+  nvllm daemon <action>       manage the systemd user service: install | status |
+                              start | stop | restart | uninstall
+                              (installed by default since 0.8.0 — `nvllm daemon help`)
   nvllm list [PREFIX]         list models found in the HF cache
   nvllm run MODEL [PROMPT]    chat with a model — one-shot, or an interactive REPL
   nvllm create NAME --from MODEL [--system "..."]   virtual model over a cache model
@@ -277,12 +290,29 @@ def main(argv: list[str] | None = None) -> int:
     cmd, rest = argv[0], argv[1:]
     if cmd == "serve":
         return run_server(rest, prog="nvllm serve")
+    if cmd == "daemon":
+        return daemon.cmd_daemon(rest)
     if cmd in ("help", "--help", "-h"):
         print(_TOP_HELP)
         return 0
     if cmd in _REFUSALS:
         print(_REFUSALS[cmd])
         return 1
+
+    # Unknown command: suggest the closest real one. serve/daemon are special-
+    # cased above (not argparse subparsers), so they would be missing from
+    # argparse's "invalid choice" list — this is where a typo'd `nvllm sever`
+    # lands:  →  "did you mean 'serve'?"
+    # Only fire for commands NOT in the table — a valid one (e.g. `run`) would
+    # otherwise "suggest itself" and be rejected.
+    guess = [] if cmd in _COMMANDS else difflib.get_close_matches(cmd, _COMMANDS, n=1, cutoff=0.6)
+    if guess:
+        print(
+            f"nvllm: unknown command '{cmd}' — did you mean '{guess[0]}'?\n"
+            f"  try: nvllm {guess[0]} --help",
+            file=sys.stderr,
+        )
+        return 2
 
     p = _build_parser()
     # parse the full argv (command name included): the subparsers need it

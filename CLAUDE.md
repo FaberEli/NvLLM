@@ -16,7 +16,7 @@ tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
 
 ## Running
 
-- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (205 tests)
+- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (219 tests)
 - Dev server (default bind `0.0.0.0:8004`): `nvllm serve` or
   `.venv/bin/python -m nvllm_service serve --hf-hub-root <cache>`
 - **Single entry (0.3.0, breaking):** `nvllm` (= `nvllm_service.cli:main`) and
@@ -28,10 +28,16 @@ tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
   `NVLLM_SERVER` env / `--server` flag). They must NOT require vLLM locally and
   must NOT call `_preflight_vllm`.
 - Production install (for users): `scripts/install.sh` — venv + `vllm==0.31.0` (pinned
-  validated baseline) into `~/.nvllm/`, symlink in `~/.local/bin`, optional systemd
-  user service (`--with-service`). `scripts/update.sh` upgrades (vLLM stays pinned
-  unless `--upgrade-vllm`); `scripts/uninstall.sh` restores the environment
-  (models/caches kept unless `--purge`). All honor `NVLLM_HOME` to relocate the root.
+  validated baseline) into `~/.nvllm/`, symlink in `~/.local/bin`, and — **0.8.0:
+  installs + enables the systemd user service by default** (NvLLM is a resident
+  service; `--no-service` opts out for containers/CI; `--with-service` is kept as a
+  back-compat no-op). The unit itself is delegated to `nvllm daemon install`
+  (`daemon.py` = one source of truth); no systemd → warning, not failure (the
+  foreground path still works); `install.json`'s `service` records the real outcome.
+  `scripts/update.sh` upgrades (vLLM stays pinned unless `--upgrade-vllm`; the
+  release path re-runs install.sh, so the service self-heals); `scripts/uninstall.sh`
+  restores the environment (models/caches kept unless `--purge`). All honor
+  `NVLLM_HOME` to relocate the root.
 - **Release (0.6.0, Ollama-style small artifact):** `scripts/build-release.sh`
   stages `install.sh` + `nvllm_service/` source + `pyproject.toml` + `scripts/`
   (update/uninstall/bootstrap) + LICENSE/README → a **few-MB tarball** (NO bundled
@@ -71,6 +77,15 @@ tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
   field *cannot* share the method's name, so it is deliberately `state_root`.
   Every env-backed knob is parsed in its `default_factory` — `from_env()` is a
   documented alias for `cls()`, so there is no second place to wire a new env var.
+- `daemon.py` — **Service management (0.8.0):** the `nvllm daemon` subcommand
+  (`install|status|start|stop|restart|uninstall`) + the unit template. A *local*
+  command (like `serve`): manages the systemd **user** unit
+  (`$XDG_CONFIG_HOME/systemd/user/nvllm.service`) directly — no HTTP, no server
+  needed. `render_unit(root, port)` is pure (unit-tested); `_systemctl` is the
+  single subprocess seam (tests monkeypatch it — suite stays systemd-free);
+  `service_port()` = install.json → `$NVLLM_PORT` → 8004. `_record_service()` keeps
+  `install.json`'s `service` field honest. `install.sh` delegates here, so the
+  template never drifts.
 - `created.py` — `CreatedModel` (name/base/system/options/created_at) +
   `CreatedStore`: the virtual-model store (`created.json`, atomic tmp+rename
   write; `list/get/names/create/delete`). Pure stdlib, independently testable.
@@ -191,7 +206,13 @@ tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
   backend never pulls them. `decide()` is async (blocking work via
   `asyncio.to_thread`). Only used when `settings.router_backend == "transformers"`.
 - `cli.py` — the single entry. `run_server()` is the server body (flags — keep in
-  sync with `config.py` when adding flags); `main()` dispatches subcommands;
+  sync with `config.py` when adding flags); `main()` special-cases the local
+  commands **`serve`** and **`daemon`** (0.8.0 → `daemon.cmd_daemon()`) *before*
+  argparse, then dispatches the rest; unknown commands get a did-you-mean hint
+  (`difflib` over `_COMMANDS`, fired only for names NOT in the table — a valid
+  command must never "suggest itself" and be rejected). serve/daemon/help are not
+  argparse subparsers, so they are absent from the "invalid choice" list — that is
+  exactly what the hint compensates for (`nvllm sever` → `did you mean 'serve'?`);
   `_REFUSALS` holds the polite refusals for `pull`/`push`/`login`/`cp` — **do not
   implement real download/publish** (models live in the HF cache; that is a
   deliberate NvLLM trait). `create` and `rm` are **real subcommands** since 0.4.0:

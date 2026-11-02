@@ -283,7 +283,7 @@
 <header class="hero">
   <div class="wrap">
     <div class="chips">
-      <span class="chip"><b>v0.7.0</b> 已发布</span>
+      <span class="chip"><b>v0.8.0</b> 已发布</span>
       <span class="chip">DGX Spark · GB10</span>
       <span class="chip">NVFP4 全速</span>
       <span class="chip">MIT</span>
@@ -297,7 +297,7 @@
     </p>
     <div class="rowbtns">
       <a class="btn primary" href="https://github.com/FaberEli/NvLLM">GitHub 仓库</a>
-      <a class="btn" href="https://github.com/FaberEli/NvLLM/releases/tag/0.7.0">Release 0.7.0</a>
+      <a class="btn" href="https://github.com/FaberEli/NvLLM/releases/tag/0.8.0">Release 0.8.0</a>
       <a class="btn" href="#live">在线实测 ↓</a>
     </div>
     <div class="oneline">
@@ -319,9 +319,10 @@
     <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">bash — 安装 &amp; 启动</span><button class="copy">复制</button></div>
     <pre><span class="p">$</span> <span>curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash</span>
 <span class="c"># → 下载几 MB 源码 tarball（单资产、不分卷）→ 建 venv 并 pip 装 vLLM 引擎 + nvllm → 装到 ~/.nvllm</span>
-<span class="c">#   如需 systemd 用户服务，安装时加：--with-service</span>
+<span class="c">#   (0.8.0+) systemd 用户服务默认安装并启用（自启、崩溃重启）；容器/CI 追加 --no-service</span>
 
-<span class="p">$</span> <span>nvllm serve</span>   <span class="c"># 或已装 --with-service 时自动常驻；默认监听 0.0.0.0:8004</span>
+<span class="o">nvllm: systemd user service 'nvllm' installed and started (root: ~/.nvllm, port: 8004)</span>
+<span class="o">nvllm:    status:  systemctl --user status nvllm</span>
 <span class="o">discovered 36 model(s) under ~/.cache/huggingface/hub</span>
 
 <span class="p">$</span> <span>nvllm list</span>
@@ -352,7 +353,7 @@ nvidia/Nemotron-Nano-9B-v2-NVFP4           9c0d1e2f     6.1 GB    5 days ago</sp
 <!-- ================= 功能全景 ================= -->
 <section id="features">
   <h2><span class="no">02</span>功能全景</h2>
-  <p class="lede">v0.7.0 的完整能力面——每一条都有测试覆盖（<span id="testcount-features">205</span> tests）或 E2E 验证。</p>
+  <p class="lede">v0.8.0 的完整能力面——每一条都有测试覆盖（<span id="testcount-features">219</span> tests）或 E2E 验证。</p>
   <div class="grid">
     <div class="card reveal"><div class="ico">🖥️</div><h4>Ollama 风格 CLI</h4><p><code>serve / list / show / run / ps / stop / version / create / rm / launch</code>，<code>run</code> 支持一次性提问与交互式 REPL。</p></div>
     <div class="card reveal"><div class="ico">🔌</div><h4>三协议网关</h4><p>Ollama ↔ OpenAI 双向翻译，Anthropic Messages API 原生翻译，SSE / NDJSON 流式全通。</p></div>
@@ -363,6 +364,7 @@ nvidia/Nemotron-Nano-9B-v2-NVFP4           9c0d1e2f     6.1 GB    5 days ago</sp
     <div class="card reveal"><div class="ico">⚡</div><h4>多模型并发驻留</h4><p><code>--max-models</code> 并发常驻；过期优先、LRU 腾位；<code>inflight</code> 保护在途请求（含流式期间）不被回收。</p></div>
     <div class="card reveal"><div class="ico">📦</div><h4>Ollama 式小发行</h4><p>tarball 只有几 MB（源码+安装器，单 GitHub 资产、不分卷）；安装时 pip 拉 vLLM 引擎——一键 install / update / uninstall，可选 systemd 用户服务。</p></div>
     <div class="card reveal"><div class="ico">🔭</div><h4>可观测性 logs / doctor</h4><p><b>0.7.0：</b>逐请求日志（requested → resolved 模型、状态码、时延，4xx/5xx 分级）写入滚动 <code>service.log</code>；<code>nvllm logs</code> 列表 / 尾部 / <code>-f</code> 跟随；<code>nvllm doctor</code> 一眼健康检查——GPU、模型、worker、Router、路径。</p></div>
+    <div class="card reveal"><div class="ico">🛠️</div><h4>常驻服务默认 + daemon 管理</h4><p><b>0.8.0：</b>一行安装 / <code>install.sh</code> 默认<b>安装并启用</b> systemd 用户服务（NvLLM 本就是常驻服务；<code>--no-service</code> 退出，如容器/CI）；<code>nvllm daemon install|status|start|stop|restart|uninstall</code> 直接在 CLI 管理服务（本地命令、无需服务在跑）；unit 模板单一事实来源（<code>daemon.py</code>，install.sh 委托）；未知命令给拼写建议（<code>nvllm sever</code> → did you mean <code>serve</code>）。</p></div>
   </div>
 </section>
 
@@ -464,8 +466,8 @@ meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5
 <span class="o">unloaded 'meta-llama/Llama-3.1-8B-Instruct-NVFP4'</span>
 
 <span class="p">$</span> <span>nvllm version</span>
-<span class="o">nvllm 0.7.0</span>
-<span class="o">server  nvllm-serve 0.7.0 @ http://127.0.0.1:8004</span></pre>
+<span class="o">nvllm 0.8.0</span>
+<span class="o">server  nvllm-serve 0.8.0 @ http://127.0.0.1:8004</span></pre>
   </div>
 </section>
 
@@ -551,7 +553,7 @@ acme_Qwen3-8B-NVFP4_main.log     2.1 MiB  2026-10-31 20:58:44</span>
 <span class="p">$</span> <span>nvllm logs -f                            <span class="c"># 实时跟随（Ctrl-C 退出）</span></span>
 
 <span class="p">$</span> <span>nvllm doctor                           <span class="c"># 健康检查：GPU / 模型 / worker / Router / 路径</span></span>
-<span class="o">nvllm 0.7.0 @ http://127.0.0.1:8004
+<span class="o">nvllm 0.8.0 @ http://127.0.0.1:8004
 gpu: NVIDIA GB10 (memory N/A — unified)
 models: 4 cached (3 servable, 1 decision) · loaded: acme/TinyLM:main
 workers: [acme/TinyLM:main] ready  pid=9999  port=8011
@@ -677,6 +679,8 @@ cache: ~/.cache/huggingface  logs: ~/.local/share/nvllm-serve/logs</span></pre>
     <div class="item reveal"><span class="m">M12</span> <span class="t">0.4.0 收尾复盘 + Release</span><span class="d"> — 6 处正确性修复 + 4 处结构统一，143 tests，Release 0.4.0 发布</span></div>
     <div class="item reveal"><span class="m">M13</span> <span class="t">决策模型路由 + MIT + 0.5.0</span><span class="d"> — Router judge 升级为常驻<b>决策模型（System One）</b>：选项打分 + 概率分布（vLLM+logprob / 进程内 one-forward），<code>nvllm route</code> 干跑、<code>/api/route</code> 暴露分布；协议 Apache-2.0 → MIT；158 tests，DGX Spark 实测 0.8B/4B 决策模型</span></div>
     <div class="item reveal"><span class="m">M14</span> <span class="t">可选激活 + AutoRouter + 推荐 + 0.6.0</span><span class="d"> — <code>nvllm router on</code> 扫缓存找决策模型（<b>多信号通用检测</b>：决策标记文件 <code>decision_config.json</code>/<code>model_router.yaml</code> 或名字含 <code>decision</code>，不写死本地模型名）、交互挑 judge、可选让<b>已加载本地大模型读元数据推荐</b>；激活落盘 <code>router.json</code>，下次 <code>serve</code> judge 常驻、列表多出 <code>AutoRouter</code>；<code>router off/status</code>；新增 <code>POST /api/router</code> + <code>POST /api/router/recommend</code>；0.5.0 显式旗标/隐藏别名 <code>auto</code> 仍兼容（旗标优先）</span></div>
+    <div class="item reveal"><span class="m">M15</span> <span class="t">可观测性 logs / doctor + 0.7.0</span><span class="d"> — 逐请求日志（requested → resolved、状态码、时延，4xx/5xx 分级）+ 滚动 <code>service.log</code> + <code>GET /api/logs</code>（严格路径穿越防护）+ <code>GET /api/doctor</code>（nvidia-smi 容错 GB10 统一内存 <code>[N/A]</code>）+ CLI <code>nvllm logs</code> / <code>nvllm doctor</code>；205 tests</span></div>
+    <div class="item reveal"><span class="m">M16</span> <span class="t">常驻服务默认 + daemon 命令 + 0.8.0</span><span class="d"> — 一行安装默认<b>安装并启用</b> systemd 用户服务（<code>--no-service</code> 逃生、<code>--with-service</code> 兼容空操作）；<code>nvllm daemon install|status|start|stop|restart|uninstall</code>（本地命令；unit 模板单一事实来源 <code>daemon.py</code>，install.sh 委托；无 systemd 告警不失败）；<code>install.json</code> 记录真实服务状态；未知命令 did-you-mean（<code>nvllm sever</code> → <code>serve</code>）；219 tests</span></div>
   </div>
   <p class="lede" style="margin-top:6px">
     <b>发行说明（0.6.0，Ollama 式）：</b>tarball 只是几 MB 的<b>纯 NvLLM 源码 + 安装器</b>（单 GitHub 资产、<b>不分卷</b>），
@@ -693,11 +697,11 @@ cache: ~/.cache/huggingface  logs: ~/.local/share/nvllm-serve/logs</span></pre>
     <div class="links">
       <a href="https://FaberEli.github.io/NvLLM/">演示报告线上版</a>
       <a href="https://github.com/FaberEli/NvLLM">github.com/FaberEli/NvLLM</a>
-      <a href="https://github.com/FaberEli/NvLLM/releases/tag/0.7.0">Release 0.7.0</a>
+      <a href="https://github.com/FaberEli/NvLLM/releases/tag/0.8.0">Release 0.8.0</a>
       <a href="https://github.com/FaberEli/NvLLM/blob/main/README.md">README</a>
       <a href="https://github.com/FaberEli/NvLLM/blob/main/README.zh-CN.md">中文 README</a>
     </div>
-    NvLLM v0.7.0 · MIT · 本页面为单文件（无外部依赖、可离线打开），随仓库版本同步更新。
+    NvLLM v0.8.0 · MIT · 本页面为单文件（无外部依赖、可离线打开），随仓库版本同步更新。
     <div style="margin-top:8px">一行安装：<code>curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash</code></div>
   </div>
 </footer>
