@@ -8,7 +8,7 @@
 #      download nvllm-<ver> → extract → run its bundled install.sh (idempotent
 #      upgrade: venv + pip vllm==pin + nvllm). This is the path that makes
 #      `update` work for `curl|bash` installs, whose staging dir is not durable.
-# Force a release with --version V (default: 0.7.0). Then refreshes the
+# Force a release with --version V (default: 0.8.0). Then refreshes the
 # ~/.local/bin symlink and restarts the systemd user service if it is active.
 #
 # vLLM stays on the pinned version by design (the pin is what was validated on
@@ -17,7 +17,7 @@
 #
 # Usage:
 #   scripts/update.sh [options]
-#     --version V         update from release V (default: 0.7.0) — forces the release path
+#     --version V         update from release V (default: 0.8.0) — forces the release path
 #     --upgrade-vllm      upgrade vLLM to the latest release (otherwise keep the pin)
 #     --vllm-version V    install/pin vLLM to exactly V
 #     --dry-run           print the steps without executing
@@ -25,7 +25,7 @@
 #
 # Environment:
 #   NVLLM_HOME            install root (default: $HOME/.nvllm)
-#   NVLLM_VERSION         default release version for the release path (default: 0.7.0)
+#   NVLLM_VERSION         default release version for the release path (default: 0.8.0)
 #   NVLLM_RELEASE_BASE    release download base (default: GitHub releases of FaberEli/NvLLM)
 
 set -euo pipefail
@@ -34,7 +34,7 @@ ROOT="${NVLLM_HOME:-$HOME/.nvllm}"
 UPGRADE_VLLM=0
 VLLM_VERSION=""
 DRY_RUN=0
-RELEASE_VERSION="${NVLLM_VERSION:-0.7.0}"
+RELEASE_VERSION="${NVLLM_VERSION:-0.8.0}"
 WANT_RELEASE=0
 
 usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
