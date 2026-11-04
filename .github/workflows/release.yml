@@ -1,0 +1,48 @@
+# Release pipeline (0.8.0+): build the small source tarball on a GitHub-hosted
+# runner and publish it as a GitHub Release with the single asset.
+#
+# Why CI: the release build is pure staging (no vLLM/torch, no compilation), so
+# any Linux runner works; doing it on GitHub's side keeps the upload on a clean
+# network path (local machines behind restrictive egress otherwise flake on the
+# asset POST).
+#
+# Triggers (fully automated):
+#   - push a version tag:   git tag 0.8.0 && git push origin 0.8.0
+#   - or the Actions tab:   "Release" → Run workflow
+# The version is read from pyproject.toml at the tagged commit.
+name: Release
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - '[0-9]+.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the release tarball (source + installer only)
+        run: bash scripts/build-release.sh
+
+      - name: Create the GitHub Release + upload the single asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -1)"
+          [ -n "$VER" ] || { echo "no version in pyproject.toml" >&2; exit 1; }
+          if gh release view "$VER" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "release ${VER} already exists — nothing to do"
+            exit 0
+          fi
+          gh release create "$VER" "dist/nvllm-${VER}-linux-aarch64.tar.gz" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "nvllm ${VER}" \
+            --notes "nvllm ${VER}
+            一行安装（默认装常驻服务）：
+            curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/bootstrap.sh | bash"
