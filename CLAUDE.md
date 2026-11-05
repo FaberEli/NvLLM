@@ -212,7 +212,12 @@ tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
   (`difflib` over `_COMMANDS`, fired only for names NOT in the table — a valid
   command must never "suggest itself" and be rejected). serve/daemon/help are not
   argparse subparsers, so they are absent from the "invalid choice" list — that is
-  exactly what the hint compensates for (`nvllm sever` → `did you mean 'serve'?`);
+  exactly what the hint compensates for (`nvllm sever` → `did you mean 'serve'?`).
+  ⚠️ `--version`/`-V` (and `--help`/`-h`) are answered at the top of `main()`
+  *before* the did-you-mean — `install.sh`'s install-time smoke test runs
+  `nvllm --version`, so the version flag MUST keep working (the 0.8.1 hotfix is
+  the cautionary tale: 0.8.0's did-you-mean rejected `--version` → rc 2 → the
+  install aborted before the symlink / service / `install.json` were written).
   `_REFUSALS` holds the polite refusals for `pull`/`push`/`login`/`cp` — **do not
   implement real download/publish** (models live in the HF cache; that is a
   deliberate NvLLM trait). `create` and `rm` are **real subcommands** since 0.4.0:

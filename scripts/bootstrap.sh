@@ -14,7 +14,7 @@
 # to PyPI, and ~15 GB free disk (the vLLM engine + torch download).
 #
 # Environment:
-#   NVLLM_VERSION        release version to install (default: 0.8.0)
+#   NVLLM_VERSION        release version to install (default: 0.8.1)
 #   NVLLM_RELEASE_URL    full tarball URL (overrides NVLLM_VERSION / BASE; must be a single file)
 #   NVLLM_RELEASE_BASE   download base (default: GitHub releases of FaberEli/NvLLM)
 #   NVLLM_HOME           install root (default: ~/.nvllm)
@@ -26,7 +26,7 @@
 
 set -euo pipefail
 
-VERSION="${NVLLM_VERSION:-0.8.0}"
+VERSION="${NVLLM_VERSION:-0.8.1}"
 BASE="${NVLLM_RELEASE_BASE:-https://github.com/FaberEli/NvLLM/releases/download}"
 URL="${NVLLM_RELEASE_URL:-$BASE/$VERSION/nvllm-$VERSION-linux-aarch64.tar.gz}"
 

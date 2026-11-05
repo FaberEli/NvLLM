@@ -42,7 +42,7 @@ inference engine: one `nvllm` CLI, a resident model service, and local agents
 > (one-glance environment + service health: GPU, models, workers, router,
 > limits, paths).
 >
-> **0.8.0 (this release):** **the resident service is now the default.** A
+> **0.8.0:** **the resident service is now the default.** A
 > plain `curl | bash` (or `install.sh`) installs *and enables* the systemd
 > **user** service out of the box — NvLLM is a resident inference service, so
 > that is the sensible default (`--no-service` opts out, e.g. containers/CI;
@@ -52,6 +52,13 @@ inference engine: one `nvllm` CLI, a resident model service, and local agents
 > again. The unit template has one source of truth (`nvllm_service/daemon.py`),
 > which `install.sh` delegates to. Unknown commands get a did-you-mean hint
 > (`nvllm sever` → `did you mean 'serve'?`).
+>
+> **0.8.1 (this release):** hotfix — the 0.8.0 did-you-mean hint ran *before*
+> argparse and rejected the `nvllm --version` flag (→ rc 2); that is exactly what
+> `install.sh`'s install-time smoke test runs, so a 0.8.0 install aborted *before*
+> the symlink, the service, and `install.json` were written. `nvllm --version` /
+> `-V` are now answered at the CLI top level (like `--help`), so the natural
+> version flag works again and the installer runs to completion. +2 tests → 221 green.
 
 Built to serve **NVFP4-quantized** models at full speed on **DGX Spark (GB10)**
 unified memory. It discovers models from your local HuggingFace hub cache,

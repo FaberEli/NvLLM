@@ -14,13 +14,19 @@
 >
 > **0.7.0：** **面向实际使用的可观测性。** 每个请求都会记录其模型解析（`requested → resolved`、状态码、时延；错误以 warning 级别记录）；服务在每个模型 worker 日志旁额外写一个**滚动**的 `service.log`；新增两条命令：`nvllm logs`（列出日志文件、查看尾部、`-f` 跟随）与 `nvllm doctor`（一眼看清环境 + 服务健康：GPU、模型、worker、路由、限制、路径）。
 >
-> **0.8.0（本版本）：** **常驻服务成为默认。** 裸 `curl | bash`（或 `install.sh`）
+> **0.8.0：** **常驻服务成为默认。** 裸 `curl | bash`（或 `install.sh`）
 > 开箱即**安装并启用** systemd **用户**服务——NvLLM 本就是常驻推理服务，这是合理默认
 > （`--no-service` 可退出，如容器/CI；`--with-service` 保留为兼容空操作）。新增
 > **`nvllm daemon`** 命令在 CLI 里管理服务——`install | status | start | stop |
 > restart | uninstall`——(重新)加装服务不再需要跑安装器。unit 模板单一事实来源
 > （`nvllm_service/daemon.py`），`install.sh` 委托给它。未知命令给出拼写建议
 > （`nvllm sever` → `did you mean 'serve'?`）。
+>
+> **0.8.1（本版本）：** 热修——0.8.0 的拼写建议跑在 argparse 之前，把 `nvllm --version`
+> 旗标当成未知命令拒绝（→ rc 2）；而这正是 `install.sh` 安装期冒烟测试所跑的命令，
+> 于是 0.8.0 的安装在写出 symlink、服务、`install.json` 之前就中断了。现 `nvllm
+> --version` / `-V` 在 CLI 顶层直接处理（与 `--help` 同级），版本旗标恢复可用、安装
+> 流程完整跑完。+2 测试 → **221 全绿**。
 
 为在 **DGX Spark (GB10)** 统一内存上以全速运行 **NVFP4 量化**模型而生。它从本地 HuggingFace hub 缓存中发现模型，在固定单一端口（默认 **8004**）上提供服务，并暴露 **Ollama**（`/api/*`）、**OpenAI**（`/v1/*`）和 **Anthropic**（`/v1/messages`）三套 API。每个模型各跑在自己的 `vllm serve` 子进程中，崩溃相互隔离，监督者可回收并重启。
 
@@ -270,7 +276,7 @@ curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstr
 在任意 Linux 机器上构建 tarball（此处不需要 vLLM/torch——只暂存源码，几秒完成）：
 
 ```bash
-scripts/build-release.sh        # → dist/nvllm-0.8.0-linux-aarch64.tar.gz（几 MB）
+scripts/build-release.sh        # → dist/nvllm-0.8.1-linux-aarch64.tar.gz（几 MB）
 ```
 
 然后把这**单个**资产上传到 GitHub Release——体积小，无需分卷（永不触及 GitHub 单资产 2GB 上限）：

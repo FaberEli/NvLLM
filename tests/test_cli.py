@@ -288,6 +288,24 @@ def test_version(nvllm_env, capsys):
     assert f"server  nvllm-serve {nvllm_service.__version__}" in out
 
 
+@pytest.mark.parametrize("flag", ["--version", "-V"])
+def test_version_flag(flag, capsys):
+    """`nvllm --version` / `-V` (the flag idiom install.sh's smoke test relies on)
+    must print the version and exit 0 — not be rejected as an unknown command.
+
+    Regression guard: the did-you-mean added in 0.8.0 ran before argparse and
+    intercepted `--version` → rc 2, which made install.sh's `nvllm --version`
+    smoke test fail and aborted the whole install before the symlink, the
+    systemd service, and install.json were written.
+    """
+    import nvllm_service
+
+    rc = cli.main([flag])
+    out = capsys.readouterr().out
+    assert rc == 0, f"`nvllm {flag}` should exit 0"
+    assert f"nvllm {nvllm_service.__version__}" in out
+
+
 # ---- create / rm (virtual models) -----------------------------------------------
 
 

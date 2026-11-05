@@ -292,6 +292,13 @@ def main(argv: list[str] | None = None) -> int:
         return run_server(rest, prog="nvllm serve")
     if cmd == "daemon":
         return daemon.cmd_daemon(rest)
+    # `--version` / `-V` are flags, not commands — answer them here (before the
+    # did-you-mean below) so the natural `nvllm --version` idiom keeps working
+    # and the installer's smoke test passes. (0.8.1: the did-you-mean added in
+    # 0.8.0 otherwise rejected `--version` as an unknown command → rc 2.)
+    if cmd in ("--version", "-V"):
+        print(f"nvllm {__version__}")
+        return 0
     if cmd in ("help", "--help", "-h"):
         print(_TOP_HELP)
         return 0
