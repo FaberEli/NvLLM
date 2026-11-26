@@ -25,6 +25,9 @@ def test_registry_env_openai_agent(monkeypatch):
 def test_registry_env_anthropic_agent(monkeypatch, tmp_path):
     monkeypatch.setattr(L, "find_binary", lambda name: f"/usr/bin/{name}")
     monkeypatch.setenv("NVLLM_STATE_DIR", str(tmp_path))
+    # 模拟"在已设 ANTHROPIC_MODEL 的 shell 里跑 launch claude"（比如本会话
+    # 正通过 NvLLM 跑 Claude Code）——泄漏必须被剥掉，模型名只走 settings.json
+    monkeypatch.setenv("ANTHROPIC_MODEL", "ambient/Leak:main")
     _a, _binary, env, args = L.launch_config("claude", "http://127.0.0.1:8004", "org/Mod:main")
     assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8004"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "nvllm"

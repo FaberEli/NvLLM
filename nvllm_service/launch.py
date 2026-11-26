@@ -210,6 +210,11 @@ def launch_config(agent_name: str | None, base_url: str, model: str) -> tuple[Ag
     if agent.name == "claude":
         # model name goes via settings.json (CLAUDE_CONFIG_DIR), not ANTHROPIC_MODEL
         env["CLAUDE_CONFIG_DIR"] = str(claude_config_dir(base_url, model))
+        # the native build gates ANTHROPIC_MODEL against a known-claude whitelist;
+        # an ambient one (e.g. this very session running through NvLLM) would leak
+        # into the child and either die locally (zero requests) or silently
+        # override the settings.json model — strip it, the settings.json wins
+        env.pop("ANTHROPIC_MODEL", None)
     return agent, binary, env, agent.args_for(model)
 
 
