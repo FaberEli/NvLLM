@@ -283,7 +283,7 @@
 <header class="hero">
   <div class="wrap">
     <div class="chips">
-      <span class="chip"><b>v0.8.1</b> 已发布</span>
+      <span class="chip"><b>v0.8.2</b> 已发布</span>
       <span class="chip">DGX Spark · GB10</span>
       <span class="chip">NVFP4 全速</span>
       <span class="chip">MIT</span>
@@ -297,7 +297,7 @@
     </p>
     <div class="rowbtns">
       <a class="btn primary" href="https://github.com/FaberEli/NvLLM">GitHub 仓库</a>
-      <a class="btn" href="https://github.com/FaberEli/NvLLM/releases/tag/0.8.1">Release 0.8.1</a>
+      <a class="btn" href="https://github.com/FaberEli/NvLLM/releases/tag/0.8.2">Release 0.8.2</a>
       <a class="btn" href="#live">在线实测 ↓</a>
     </div>
     <div class="oneline">
@@ -353,7 +353,7 @@ nvidia/Nemotron-Nano-9B-v2-NVFP4           9c0d1e2f     6.1 GB    5 days ago</sp
 <!-- ================= 功能全景 ================= -->
 <section id="features">
   <h2><span class="no">02</span>功能全景</h2>
-  <p class="lede">v0.8.1 的完整能力面——每一条都有测试覆盖（<span id="testcount-features">221</span> tests）或 E2E 验证。</p>
+  <p class="lede">v0.8.2 的完整能力面——每一条都有测试覆盖（<span id="testcount-features">223</span> tests）或 E2E 验证。</p>
   <div class="grid">
     <div class="card reveal"><div class="ico">🖥️</div><h4>Ollama 风格 CLI</h4><p><code>serve / list / show / run / ps / stop / version / create / rm / launch</code>，<code>run</code> 支持一次性提问与交互式 REPL。</p></div>
     <div class="card reveal"><div class="ico">🔌</div><h4>三协议网关</h4><p>Ollama ↔ OpenAI 双向翻译，Anthropic Messages API 原生翻译，SSE / NDJSON 流式全通。</p></div>
@@ -365,6 +365,7 @@ nvidia/Nemotron-Nano-9B-v2-NVFP4           9c0d1e2f     6.1 GB    5 days ago</sp
     <div class="card reveal"><div class="ico">📦</div><h4>Ollama 式小发行</h4><p>tarball 只有几 MB（源码+安装器，单 GitHub 资产、不分卷）；安装时 pip 拉 vLLM 引擎——一键 install / update / uninstall，可选 systemd 用户服务。</p></div>
     <div class="card reveal"><div class="ico">🔭</div><h4>可观测性 logs / doctor</h4><p><b>0.7.0：</b>逐请求日志（requested → resolved 模型、状态码、时延，4xx/5xx 分级）写入滚动 <code>service.log</code>；<code>nvllm logs</code> 列表 / 尾部 / <code>-f</code> 跟随；<code>nvllm doctor</code> 一眼健康检查——GPU、模型、worker、Router、路径。</p></div>
     <div class="card reveal"><div class="ico">🛠️</div><h4>常驻服务默认 + daemon 管理</h4><p><b>0.8.0：</b>一行安装 / <code>install.sh</code> 默认<b>安装并启用</b> systemd 用户服务（NvLLM 本就是常驻服务；<code>--no-service</code> 退出，如容器/CI）；<code>nvllm daemon install|status|start|stop|restart|uninstall</code> 直接在 CLI 管理服务（本地命令、无需服务在跑）；unit 模板单一事实来源（<code>daemon.py</code>，install.sh 委托）；未知命令给拼写建议（<code>nvllm sever</code> → did you mean <code>serve</code>）。</p></div>
+    <div class="card reveal"><div class="ico">🚑</div><h4>加载失败快速反馈</h4><p><b>0.8.2：</b>模型加载失败（OOM / 端口占用 / 引擎核心崩溃）~1.5 秒内失败——即使 <code>vllm serve</code> 父进程卡在 teardown 也不干等 30 分钟 <code>load_timeout</code>；所有加载失败错误（含 API 502）<b>携带 worker 日志尾部</b>，原因直接可见；worker 日志按加载截断，重试不继承陈旧失败行。</p></div>
   </div>
 </section>
 
@@ -466,8 +467,8 @@ meta-llama/Llama-3.1-8B-Instruct-NVFP4     a1b2c3d4     4.9 GB    100% GPU     5
 <span class="o">unloaded 'meta-llama/Llama-3.1-8B-Instruct-NVFP4'</span>
 
 <span class="p">$</span> <span>nvllm version</span>
-<span class="o">nvllm 0.8.1</span>
-<span class="o">server  nvllm-serve 0.8.1 @ http://127.0.0.1:8004</span></pre>
+<span class="o">nvllm 0.8.2</span>
+<span class="o">server  nvllm-serve 0.8.2 @ http://127.0.0.1:8004</span></pre>
   </div>
 </section>
 
@@ -553,7 +554,7 @@ acme_Qwen3-8B-NVFP4_main.log     2.1 MiB  2026-10-31 20:58:44</span>
 <span class="p">$</span> <span>nvllm logs -f                            <span class="c"># 实时跟随（Ctrl-C 退出）</span></span>
 
 <span class="p">$</span> <span>nvllm doctor                           <span class="c"># 健康检查：GPU / 模型 / worker / Router / 路径</span></span>
-<span class="o">nvllm 0.8.1 @ http://127.0.0.1:8004
+<span class="o">nvllm 0.8.2 @ http://127.0.0.1:8004
 gpu: NVIDIA GB10 (memory N/A — unified)
 models: 4 cached (3 servable, 1 decision) · loaded: acme/TinyLM:main
 workers: [acme/TinyLM:main] ready  pid=9999  port=8011
@@ -682,6 +683,7 @@ cache: ~/.cache/huggingface  logs: ~/.local/share/nvllm-serve/logs</span></pre>
     <div class="item reveal"><span class="m">M15</span> <span class="t">可观测性 logs / doctor + 0.7.0</span><span class="d"> — 逐请求日志（requested → resolved、状态码、时延，4xx/5xx 分级）+ 滚动 <code>service.log</code> + <code>GET /api/logs</code>（严格路径穿越防护）+ <code>GET /api/doctor</code>（nvidia-smi 容错 GB10 统一内存 <code>[N/A]</code>）+ CLI <code>nvllm logs</code> / <code>nvllm doctor</code>；205 tests</span></div>
     <div class="item reveal"><span class="m">M16</span> <span class="t">常驻服务默认 + daemon 命令 + 0.8.0</span><span class="d"> — 一行安装默认<b>安装并启用</b> systemd 用户服务（<code>--no-service</code> 逃生、<code>--with-service</code> 兼容空操作）；<code>nvllm daemon install|status|start|stop|restart|uninstall</code>（本地命令；unit 模板单一事实来源 <code>daemon.py</code>，install.sh 委托；无 systemd 告警不失败）；<code>install.json</code> 记录真实服务状态；未知命令 did-you-mean（<code>nvllm sever</code> → <code>serve</code>）；219 tests</span></div>
     <div class="item reveal"><span class="m">M17</span> <span class="t">0.8.1 热修：恢复 nvllm --version</span><span class="d"> — 0.8.0 的 did-you-mean 跑在 argparse 之前，把 <code>nvllm --version</code> 旗标当未知命令拒绝（rc 2）；而 <code>install.sh</code> 安装期冒烟测试正是跑它，导致 0.8.0 的安装在写出 symlink / 服务 / <code>install.json</code> 之前就中断。现 <code>--version</code>/<code>-V</code> 与 <code>--help</code> 同级在 <code>main()</code> 顶层处理，版本旗标恢复可用、安装完整跑完。+2 测试 → 221 全绿</span></div>
+    <div class="item reveal"><span class="m">M18</span> <span class="t">加载失败快速反馈 + 0.8.2</span><span class="d"> — 由 2026-11-06 真实事故驱动（128B 加载 OOM、父进程卡 teardown、请求干等 30 分钟 <code>load_timeout</code> 才 502 且只给 "see &lt;log_path&gt;"）：就绪等待每轮扫描 worker 日志<b>致命启动特征</b>（引擎核心崩溃 / KV 缓存 OOM / 端口占用 / CUDA OOM），命中即 ~1.5s 内失败（父进程存活也照失败）；所有加载失败错误（含 API 502）<b>携带日志尾部</b>，原因直接可见；worker 日志<b>按加载截断</b>（重试不继承陈旧失败行；顺带修掉测试在真实日志目录留 <code>acme__*</code> 残留——<code>NVLLM_LOG_DIR</code>→<code>tmp_path</code>）。另有：<code>nvllm launch claude</code> <b>剥离周边 <code>ANTHROPIC_MODEL</code></b>——模型名只走 settings.json（自用环境：本会话本身跑在 NvLLM 上，周边已导出该变量，泄漏会致子进程在原生白名单门禁上零请求或静默错模型）。+2 测试 → 223 全绿</span></div>
   </div>
   <p class="lede" style="margin-top:6px">
     <b>发行说明（0.6.0，Ollama 式）：</b>tarball 只是几 MB 的<b>纯 NvLLM 源码 + 安装器</b>（单 GitHub 资产、<b>不分卷</b>），
@@ -698,11 +700,11 @@ cache: ~/.cache/huggingface  logs: ~/.local/share/nvllm-serve/logs</span></pre>
     <div class="links">
       <a href="https://FaberEli.github.io/NvLLM/">演示报告线上版</a>
       <a href="https://github.com/FaberEli/NvLLM">github.com/FaberEli/NvLLM</a>
-      <a href="https://github.com/FaberEli/NvLLM/releases/tag/0.8.1">Release 0.8.1</a>
+      <a href="https://github.com/FaberEli/NvLLM/releases/tag/0.8.2">Release 0.8.2</a>
       <a href="https://github.com/FaberEli/NvLLM/blob/main/README.md">README</a>
       <a href="https://github.com/FaberEli/NvLLM/blob/main/README.zh-CN.md">中文 README</a>
     </div>
-    NvLLM v0.8.1 · MIT · 本页面为单文件（无外部依赖、可离线打开），随仓库版本同步更新。
+    NvLLM v0.8.2 · MIT · 本页面为单文件（无外部依赖、可离线打开），随仓库版本同步更新。
     <div style="margin-top:8px">一行安装：<code>curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstrap.sh | bash</code></div>
   </div>
 </footer>

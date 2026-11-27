@@ -53,12 +53,24 @@ inference engine: one `nvllm` CLI, a resident model service, and local agents
 > which `install.sh` delegates to. Unknown commands get a did-you-mean hint
 > (`nvllm sever` → `did you mean 'serve'?`).
 >
-> **0.8.1 (this release):** hotfix — the 0.8.0 did-you-mean hint ran *before*
+> **0.8.1:** hotfix — the 0.8.0 did-you-mean hint ran *before*
 > argparse and rejected the `nvllm --version` flag (→ rc 2); that is exactly what
 > `install.sh`'s install-time smoke test runs, so a 0.8.0 install aborted *before*
 > the symlink, the service, and `install.json` were written. `nvllm --version` /
 > `-V` are now answered at the CLI top level (like `--help`), so the natural
 > version flag works again and the installer runs to completion. +2 tests → 221 green.
+>
+> **0.8.2 (this release):** **fast, actionable feedback when a model load fails.**
+> A worker that dies during load (OOM, port in use, engine-core crash) now fails
+> within seconds instead of waiting out the full `load_timeout` (default 30 min):
+> the readiness wait watches the worker log for fatal signatures (e.g.
+> `No available memory for the cache blocks`) and bails even when the parent
+> `vllm serve` hangs in teardown. Every load-failure error — including the API's
+> 502 — now carries the worker log tail, so you see the *reason* without hunting
+> the log file; worker logs are fresh per load, so a retry never inherits a stale
+> failure from the previous attempt. `nvllm launch claude` also no longer leaks an
+> ambient `ANTHROPIC_MODEL` into the spawned session — the model name travels
+> through its settings.json only. +2 tests → 223 green.
 
 Built to serve **NVFP4-quantized** models at full speed on **DGX Spark (GB10)**
 unified memory. It discovers models from your local HuggingFace hub cache,
@@ -526,6 +538,30 @@ the server URL (default `http://127.0.0.1:8004`); each command also accepts
 > `NVLLM_WORKER_MAX_JOBS=2` (or 3–4). The kernels are cached, so subsequent
 > loads are fast.
 
+> **Performance tuning (DGX Spark):** the conservative defaults
+> (`gpu-memory-utilization 0.5`, vLLM default scheduling) leave a lot on the
+> table when NvLLM is the *only* GPU consumer. `NVLLM_WORKER_EXTRA_ARGS`
+> passes raw flags to every `vllm serve` — a verified setup for running
+> coding agents (e.g. Claude Code via `nvllm launch claude`) on a Qwen3-class
+> NVFP4 model, on a dedicated box:
+>
+> ```bash
+> NVLLM_GPU_MEMORY_UTILIZATION=0.85 \
+> NVLLM_WORKER_EXTRA_ARGS="--max-model-len 262144 --enable-chunked-prefill \
+>   --async-scheduling --load-format fastsafetensors --enable-auto-tool-choice \
+>   --tool-call-parser qwen3_coder --reasoning-parser qwen3 \
+>   --speculative-config.method mtp --speculative-config.num_speculative_tokens 3" \
+> nvllm serve
+> ```
+>
+> Notes: MTP speculative decoding needs a model that ships MTP heads (Qwen3.8
+> does — drop `--speculative-config.*` for models that don't); the tool-call
+> flags must match the model family (Claude Code always sends
+> `tools` + `tool_choice: "auto"`, so workers need `--enable-auto-tool-choice`
+> plus a parser — `hermes` works across families). For the **systemd service**,
+> put the same env vars in a drop-in: `systemctl --user edit nvllm` →
+> `[Service] Environment=…`, then `systemctl --user restart nvllm`.
+
 ## Multi-model concurrency
 
 By default only **one** non-judge model is resident at a time (`--max-models 1`)
@@ -719,3 +755,33 @@ use.
   unified-memory SoCs like the GB10 don't sink the report), plus the CLI
   `nvllm logs` (list / tail / `-f` follow) and `nvllm doctor` one-glance health
   check. +19 tests → **205 tests green**. ✅
+- **M16 (0.8.0)** — **the resident service is the default** (born of real-use
+  friction: after a one-line install the service was missing and there was no
+  CLI way to fix it): plain `curl|bash` / `install.sh` install *and enable* the
+  systemd user service by default (`--no-service` opts out, containers/CI;
+  `--with-service` kept as a back-compat no-op); new `nvllm daemon install|
+  status|start|stop|restart|uninstall` (local command; the unit template has
+  one source of truth in `daemon.py`, which `install.sh` delegates to; no
+  systemd → warning, not failure); `install.json` records the real service
+  outcome; unknown commands get a did-you-mean hint (`nvllm sever` → `serve`).
+  +14 tests → **219 tests green**. ✅
+- **M17 (0.8.1)** — hotfix: restore `nvllm --version` — the 0.8.0 did-you-mean
+  hint ran before argparse and rejected the `--version` flag (rc 2), which is
+  exactly what `install.sh`'s install-time smoke test runs, so 0.8.0 installs
+  aborted before the symlink / service / `install.json` were written.
+  `--version` / `-V` are now answered at the CLI top level, like `--help`.
+  +2 tests → **221 green**. ✅
+- **M18 (0.8.2)** — **fast, actionable feedback when a model load fails**
+  (driven by the 2026-11-06 real-use incident: a 128B load OOM'd — *No
+  available memory for the cache blocks* — the parent `vllm serve` hung in
+  teardown, and the triggering request sat until the 30-min `load_timeout`
+  before 502-ing with only "see \<log_path\>"): the readiness wait now scans
+  the worker log for fatal startup signatures and fails within ~1.5 s even
+  while the parent process lives; every load-failure error (incl. the API 502)
+  carries the worker log tail so the *reason* is visible without hunting the
+  log; worker logs are fresh per load (a retry never inherits a stale failure).
+  Also: `nvllm launch claude` strips an ambient `ANTHROPIC_MODEL` from the
+  child env — the model name travels via settings.json only (a leaked ambient
+  value would die on the native whitelist gate or silently override the
+  settings.json model — the dogfood setup where this session itself runs
+  through NvLLM exposed it). +2 tests → **223 green**. ✅

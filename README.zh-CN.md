@@ -22,11 +22,24 @@
 > （`nvllm_service/daemon.py`），`install.sh` 委托给它。未知命令给出拼写建议
 > （`nvllm sever` → `did you mean 'serve'?`）。
 >
-> **0.8.1（本版本）：** 热修——0.8.0 的拼写建议跑在 argparse 之前，把 `nvllm --version`
+> **0.8.1：** 热修——0.8.0 的拼写建议跑在 argparse 之前，把 `nvllm --version`
 > 旗标当成未知命令拒绝（→ rc 2）；而这正是 `install.sh` 安装期冒烟测试所跑的命令，
 > 于是 0.8.0 的安装在写出 symlink、服务、`install.json` 之前就中断了。现 `nvllm
 > --version` / `-V` 在 CLI 顶层直接处理（与 `--help` 同级），版本旗标恢复可用、安装
 > 流程完整跑完。+2 测试 → **221 全绿**。
+>
+> **0.8.2（本版本）：** **模型加载失败时的快速、可操作反馈**（由 2026-11-06 真实
+> 使用事故驱动：128B 加载 OOM——*No available memory for the cache blocks*——
+> `vllm serve` 父进程卡在 teardown 不退出，触发加载的请求干等到 30 分钟
+> `load_timeout` 才 502，错误里只有一句 "see \<log_path\>"）。现就绪等待每轮
+> 轮询扫描 worker 日志中的致命启动特征（OOM / 端口占用 / 引擎核心崩溃等），
+> 命中即 ~1.5 秒内失败——即使父进程还活着；所有加载失败错误（含 API 的 502）
+> 都携带 worker 日志尾部，**原因直接可见**，不必翻日志文件；worker 日志每次
+> 加载都是全新的，重试不会继承上一次失败留下的陈旧行。另有：`nvllm launch
+> claude` 不再把周边 shell 的 `ANTHROPIC_MODEL` 泄漏给子进程——模型名只走
+> settings.json（泄漏的环境值要么在原生白名单门禁上原地死掉、要么静默覆盖
+> settings.json 的模型名；本会话本身就跑在 NvLLM 上的自用环境暴露了它）。
+> +2 测试 → **223 全绿**。
 
 为在 **DGX Spark (GB10)** 统一内存上以全速运行 **NVFP4 量化**模型而生。它从本地 HuggingFace hub 缓存中发现模型，在固定单一端口（默认 **8004**）上提供服务，并暴露 **Ollama**（`/api/*`）、**OpenAI**（`/v1/*`）和 **Anthropic**（`/v1/messages`）三套 API。每个模型各跑在自己的 `vllm serve` 子进程中，崩溃相互隔离，监督者可回收并重启。
 
@@ -276,7 +289,7 @@ curl -fsSL https://raw.githubusercontent.com/FaberEli/NvLLM/main/scripts/bootstr
 在任意 Linux 机器上构建 tarball（此处不需要 vLLM/torch——只暂存源码，几秒完成）：
 
 ```bash
-scripts/build-release.sh        # → dist/nvllm-0.8.1-linux-aarch64.tar.gz（几 MB）
+scripts/build-release.sh        # → dist/nvllm-0.8.2-linux-aarch64.tar.gz（几 MB）
 ```
 
 然后把这**单个**资产上传到 GitHub Release——体积小，无需分卷（永不触及 GitHub 单资产 2GB 上限）：
@@ -368,6 +381,28 @@ CLI 客户端命令（`nvllm` CLI）还认 `NVLLM_SERVER`——服务 URL（默�
 > **DGX Spark (GB10)：** OS/桌面消耗 128G 统一内存的相当大比例，vLLM 默认 `gpu-memory-utilization` 0.92 启动即失败。`0.5` 是那里的安全默认；专用机器上可调高。
 
 > **NVFP4 首次加载（DGX Spark）：** 首个请求会把 FlashInfer CUTLASS NVFP4 GEMM 内核 JIT 编译进 `~/.cache/flashinfer`。这是一次大型、吃内存的构建——默认并行度下会在 Spark 共享 128G 上 OOM 杀 `nvcc`（SIGKILL / exit 137）。设 `NVLLM_WORKER_MAX_JOBS=2`（或 3–4）。内核有缓存，后续加载快。
+
+> **性能调优（DGX Spark）：** 保守默认值（`gpu-memory-utilization 0.5`、vLLM
+> 默认调度）在 NvLLM 是**唯一** GPU 消费者的场景下留了不少余量。
+> `NVLLM_WORKER_EXTRA_ARGS` 会把原始参数透传给每个 `vllm serve`——在专用机上跑
+> 编码 Agent（如 `nvllm launch claude` 跑 Claude Code）于 Qwen3 级 NVFP4 模型，
+> 已验证的一套配置：
+>
+> ```bash
+> NVLLM_GPU_MEMORY_UTILIZATION=0.85 \
+> NVLLM_WORKER_EXTRA_ARGS="--max-model-len 262144 --enable-chunked-prefill \
+>   --async-scheduling --load-format fastsafetensors --enable-auto-tool-choice \
+>   --tool-call-parser qwen3_coder --reasoning-parser qwen3 \
+>   --speculative-config.method mtp --speculative-config.num_speculative_tokens 3" \
+> nvllm serve
+> ```
+>
+> 注意：MTP 投机解码需要模型自带 MTP 头（Qwen3.8 有——没有的模型去掉
+> `--speculative-config.*`）；工具调用旗标要匹配模型族（Claude Code 总是发
+> `tools` + `tool_choice: "auto"`，所以 worker 需要 `--enable-auto-tool-choice`
+> 加一个解析器——`hermes` 跨模型族通用）。**systemd 服务**场景：同样的环境变量
+> 放进 drop-in——`systemctl --user edit nvllm` → `[Service]
+> Environment=…`，然后 `systemctl --user restart nvllm`。
 
 ## 多模型并发
 
@@ -466,3 +501,5 @@ nvllm 以 **MIT License** 授权（见 [LICENSE](LICENSE)）。
 - **M14 (0.6.0)** — 路由成为**可选、可激活的能力**：`nvllm router on` 扫描模型缓存中的 **System One 决策模型**（`decision_config.json`/`model_router.yaml` 等决策标记文件，或 `decision` 名字——通用，绝不写死本地模型），让你挑选裁判，并可**让一个已加载的本地模型读它们的元数据后推荐一个**；选择**持久化**（`state_dir()/router.json`），下次 `nvllm serve` 时裁判**常驻**运行，新的 **`AutoRouter`** 模型选项出现（`nvllm list`、`/api/tags`、`/v1/models`），把每个请求经常驻裁判路由；`nvllm router off` / `nvllm router status` 停用与查看；`POST /api/router` + `POST /api/router/recommend` 端点。0.5.0 的显式旗标路径（`--router-judge`）与隐藏的 `model: "auto"` 别名保留（旗标优先于持久化激活）。打包切换为 **Ollama 风格**：Release tarball 是小型源码包（几 MB、单 GitHub 资产），`install.sh` 安装时 `pip` 拉取 vLLM 引擎——取代 0.4.0 必须拆 2GB 分卷的捆绑 venv tarball。✅
 - **M15 (0.7.0)** — **面向实际使用的可观测性**：逐请求日志（requested → resolved 模型、状态码、时延；4xx/5xx 记为 warning/error）、与每个模型 worker 日志并存的滚动 `service.log`、`GET /api/logs`（列表 + 尾部，严格的路径穿越防护）与 `GET /api/doctor`（GPU / 模型 / worker / 路由 / 限制 / 路径，`nvidia-smi` 容错——GB10 这类统一内存 SoC 的 `[N/A]` 内存字段不会拖垮整份报告），外加 CLI `nvllm logs`（列表 / 尾部 / `-f` 跟随）与 `nvllm doctor` 一眼健康检查。+19 测试 → **205 tests green**。✅
 - **M16 (0.8.0)** — **常驻服务默认化 + CLI 服务管理**（源于真实使用摩擦：一行安装后服务缺失且无 CLI 途径补救）：裸 `curl|bash` / `install.sh` 默认**安装并启用** systemd 用户服务（`--no-service` 逃生，容器/CI；`--with-service` 保留为兼容空操作）；新增 `nvllm daemon install|status|start|stop|restart|uninstall`（**本地命令**；unit 模板单一事实来源 `nvllm_service/daemon.py`，`install.sh` 委托之；无 systemd 时告警不失败）；`install.json` 的 `service` 字段记录真实结果；未知命令给出 did-you-mean 建议（`nvllm sever` → `serve`——覆盖不在 argparse 子命令表里的特判命令）。+14 测试 → **219 tests green**。✅
+- **M17 (0.8.1)** — 热修：恢复 `nvllm --version`——0.8.0 的 did-you-mean 跑在 argparse 之前，把 `--version` 旗标当未知命令拒绝（rc 2），而 `install.sh` 安装期冒烟测试正是跑它，导致 0.8.0 的安装在写出 symlink / 服务 / `install.json` 之前就中断；现 `--version` / `-V` 与 `--help` 同级在 `main()` 顶层处理。+2 测试 → **221 全绿**。✅
+- **M18 (0.8.2)** — **模型加载失败的快速、可操作反馈**（由 2026-11-06 真实事故驱动：128B 加载 OOM，`vllm serve` 父进程卡在 teardown，请求干等 30 分钟 `load_timeout` 才 502 且只给 "see \<log_path\>"）：就绪等待每轮扫描 worker 日志的**致命启动特征**（`Engine core initialization failed` / `No available memory for the cache blocks` / `Address already in use` / `CUDA out of memory`），命中即 ~1.5s 内失败（父进程存活也照失败）；所有加载失败错误（含 API 502）**携带日志尾部**，原因直接可见；worker 日志**按加载截断**（重试不继承陈旧失败行，顺带修掉测试在真实日志目录留 `acme__*` 残留的问题——`test_workers.py` 以 autouse fixture 把 `NVLLM_LOG_DIR` 指向 `tmp_path`）。另有：`nvllm launch claude` **剥离周边 `ANTHROPIC_MODEL`**——模型名只走 settings.json（自用环境：本会话本身跑在 NvLLM 上，周边已导出该变量，泄漏会致子进程在原生白名单门禁上零请求或静默错模型）。+2 测试 → **223 全绿**。✅
