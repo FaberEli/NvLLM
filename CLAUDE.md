@@ -16,7 +16,7 @@ tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
 
 ## Running
 
-- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (219 tests)
+- Tests (no GPU, no real vLLM needed): `.venv/bin/python -m pytest -q` (223 tests)
 - Dev server (default bind `0.0.0.0:8004`): `nvllm serve` or
   `.venv/bin/python -m nvllm_service serve --hf-hub-root <cache>`
 - **Single entry (0.3.0, breaking):** `nvllm` (= `nvllm_service.cli:main`) and
@@ -114,6 +114,24 @@ tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
   with `inflight > 0`). Loading is serialized (the `ensure` lock spans spawn+
   `_wait_ready`), so at most one model loads at a time; loaded models serve
   concurrently.
+  **Startup failure fast-fail + actionable errors:** the worker log is
+  **truncated per spawn** (`"wb"` — a fresh load must not inherit a stale fatal
+  line from a previous failed attempt), and `_wait_ready` scans the log tail
+  each poll for `_FATAL_MARKERS` (e.g. `Engine core initialization failed`,
+  `No available memory for the cache blocks`) — so a dead load fails within
+  ~1.5 s even when the parent `vllm serve` hangs in teardown after an
+  engine-core crash (the 2026-11-06 128B OOM incident: the triggering request
+  otherwise sat until the 30-min `load_timeout` before 502-ing with no clue).
+  Both failure paths (process exited / fatal marker / timeout) build the
+  message via `_startup_failure()`, which appends the worker log tail — the API
+  error (`502 failed to load model: …` in `main.py`) thus carries the *reason*
+  (e.g. the OOM line) without the client hunting the log. `_FATAL_HINTS` maps
+  a marker onto NvLLM's own knob (the OOM line → raise
+  `NVLLM_GPU_MEMORY_UTILIZATION`, default 0.5 on unified-memory boxes) so the
+  error is actionable as-is. ⚠️ `test_workers.py`
+  sets `NVLLM_LOG_DIR` to `tmp_path` (autouse fixture) — worker logs must never
+  land in the real `~/.local/share/nvllm-serve/logs` (stale content would trip
+  the fast-fail scan and pollute the user's logs).
 - `main.py` — FastAPI assembly; `create_app(settings)` is what tests target.
   **CORS**: `CORSMiddleware` allows any origin (browser clients + the `index.html`
   demo panel; the service is an unauthenticated LAN tool — see README "Security").
@@ -271,7 +289,12 @@ tarball — that is exactly what the 0.4.0 "self-contained" release got wrong.
   `settings.json` (a "custom model option") accepts **any** name. So
   `launch claude` writes `<state-dir>/claude-launch/settings.json`
   (base URL + token + real model) and execs with `CLAUDE_CONFIG_DIR` — see
-  `claude_config_dir()`. Claude Code also always sends `tools`+`tool_choice:"auto"`
+  `claude_config_dir()`. `launch_config` also **strips an ambient
+  `ANTHROPIC_MODEL` from the child env** — the model name travels via
+  settings.json only; an inherited one (e.g. `nvllm launch claude` run from a
+  shell whose own Claude Code session is served through NvLLM) would either die
+  on the whitelist locally (zero requests) or silently override the
+  settings.json model. Claude Code also always sends `tools`+`tool_choice:"auto"`
   → the worker needs `NVLLM_WORKER_EXTRA_ARGS="--enable-auto-tool-choice
   --tool-call-parser hermes"` or requests 400.
 - `anthropic.py` — Anthropic Messages API ↔ OpenAI translation (request body,
