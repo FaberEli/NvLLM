@@ -56,6 +56,17 @@ def _log_tail(path: str, n: int = 25, max_bytes: int = 256 * 1024) -> list[str]:
     return chunk.decode("utf-8", "replace").splitlines()[-n:]
 
 
+# Per-marker, NvLLM-specific action hints (vLLM's own message names the vLLM
+# flag; this maps it onto NvLLM's knob so the error is actionable as-is).
+_FATAL_HINTS = {
+    "No available memory for the cache blocks": (
+        "hint: raise NVLLM_GPU_MEMORY_UTILIZATION (default 0.5 on unified-memory "
+        "boxes) and/or free memory — `nvllm ps` for other resident workers, "
+        "`nvidia-smi` for other GPU consumers"
+    ),
+}
+
+
 def _fatal_in_log(path: str) -> str | None:
     """First fatal startup marker found near the tail of the worker log (else None)."""
     tail = "\n".join(_log_tail(path, n=512))
@@ -362,7 +373,11 @@ class WorkerManager:
                     )
                 fatal = _fatal_in_log(worker.log_path)
                 if fatal:
-                    raise RuntimeError(_startup_failure(worker, f"worker log shows fatal startup error: {fatal}"))
+                    msg = _startup_failure(worker, f"worker log shows fatal startup error: {fatal}")
+                    hint = _FATAL_HINTS.get(fatal)
+                    if hint:
+                        msg += f"\n{hint}"
+                    raise RuntimeError(msg)
                 try:
                     r = await client.get(url)
                     if r.status_code == 200:

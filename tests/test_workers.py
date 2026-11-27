@@ -339,8 +339,13 @@ def test_wait_ready_fails_fast_on_fatal_marker(manager, fake_hub, tmp_path):
             encoding="utf-8",
         )
         w.log_path = str(logf)
-        with pytest.raises(RuntimeError, match=r"fatal startup error"):
+        with pytest.raises(RuntimeError) as exc:
             await manager._wait_ready(w, timeout=30)  # would be 30s without the fast-fail
+        msg = str(exc.value)
+        assert "fatal startup error" in msg
+        assert "No available memory for the cache blocks" in msg
+        # the OOM marker maps onto NvLLM's own knob — the error is actionable as-is
+        assert "NVLLM_GPU_MEMORY_UTILIZATION" in msg
 
     run_scenario(manager, scenario)
 
