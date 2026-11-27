@@ -86,6 +86,15 @@ import sys
 sys.exit(3)
 """
 
+# mimics the real 2026-11-06 incident: engine OOMs during KV-cache setup
+_FAKE_VLLM_FAIL_LOG = """#!__PYTHON__
+import sys
+
+print("Loading safetensors weights:  50%", flush=True)
+print("ERROR ValueError: No available memory for the cache blocks. Try increasing `gpu_memory_utilization`", flush=True)
+sys.exit(3)
+"""
+
 
 def _install_fake(tmp_path: Path, name: str, template: str) -> Path:
     exe = tmp_path / name
@@ -95,6 +104,17 @@ def _install_fake(tmp_path: Path, name: str, template: str) -> Path:
 
 
 # ---- fixtures -----------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolated_worker_logs(tmp_path: Path, monkeypatch) -> None:
+    """Worker logs go to tmp_path, never the real ``~/.local/share/nvllm-serve/logs``.
+
+    Without this, a stale log (e.g. the fatal line a failing test writes) lingers
+    in the real log dir and the next same-named spawn reads it back — tripping
+    the fast-fail scan or polluting the user's logs.
+    """
+    monkeypatch.setenv("NVLLM_LOG_DIR", str(tmp_path / "logs"))
 
 
 @pytest.fixture()
@@ -107,6 +127,13 @@ def fake_vllm(tmp_path: Path, monkeypatch) -> Path:
 @pytest.fixture()
 def failing_vllm(tmp_path: Path, monkeypatch) -> Path:
     exe = _install_fake(tmp_path, "fake_vllm_fail", _FAKE_VLLM_FAIL)
+    monkeypatch.setattr(workers_mod, "_vllm_bin", lambda: str(exe))
+    return exe
+
+
+@pytest.fixture()
+def failing_vllm_log(tmp_path: Path, monkeypatch) -> Path:
+    exe = _install_fake(tmp_path, "fake_vllm_fail_log", _FAKE_VLLM_FAIL_LOG)
     monkeypatch.setattr(workers_mod, "_vllm_bin", lambda: str(exe))
     return exe
 
@@ -277,6 +304,43 @@ def test_wait_ready_timeout_message_uses_duration(manager, fake_hub):
         w = Worker(info=info, port=1, state=STATE_LOADING)  # port 1: nothing listens
         with pytest.raises(TimeoutError, match=r"not ready within 1s"):
             await manager._wait_ready(w, timeout=1)
+
+    run_scenario(manager, scenario)
+
+
+def test_spawn_failure_error_carries_log_tail(manager, failing_vllm_log, fake_hub):
+    """A failed load must surface the worker log tail in the error — the API
+    caller sees the *reason* (e.g. OOM) without hunting the log file by hand."""
+    info, _ = _two_models(fake_hub)
+
+    async def scenario():
+        with pytest.raises(RuntimeError, match=r"No available memory for the cache blocks"):
+            await manager.ensure(info)
+        assert manager.get(info.name) is None  # cleaned up, not left as zombie
+
+    run_scenario(manager, scenario)
+
+
+def test_wait_ready_fails_fast_on_fatal_marker(manager, fake_hub, tmp_path):
+    """A fatal marker in the log must fail the wait immediately, even while the
+    parent process still lives and no port is ready — the 2026-11-06 incident:
+    128B load OOM'd, the parent vllm hung in teardown, and the triggering
+    request sat until the 30-min load_timeout before 502-ing with no clue."""
+    from nvllm_service.workers import STATE_LOADING, Worker
+
+    info, _ = _two_models(fake_hub)
+
+    async def scenario():
+        w = Worker(info=info, port=1, state=STATE_LOADING)  # no process, port 1: nothing listens
+        logf = tmp_path / "hung.log"
+        logf.write_text(
+            "INFO loading weights...\n"
+            "ERROR ValueError: No available memory for the cache blocks.\n",
+            encoding="utf-8",
+        )
+        w.log_path = str(logf)
+        with pytest.raises(RuntimeError, match=r"fatal startup error"):
+            await manager._wait_ready(w, timeout=30)  # would be 30s without the fast-fail
 
     run_scenario(manager, scenario)
 

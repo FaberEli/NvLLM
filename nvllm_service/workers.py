@@ -28,6 +28,55 @@ STATE_READY = "ready"
 STATE_STOPPED = "stopped"
 STATE_ERROR = "error"
 
+# Fatal startup signatures: once one of these lands in the worker log, the load
+# can never succeed — even if the parent `vllm serve` process is still alive
+# (it can hang in teardown after an engine-core crash, e.g. the 2026-11-06
+# 128B OOM incident, where the request that triggered the load sat until the
+# 30-minute load_timeout before 502-ing with no clue). Polling for these lets
+# the readiness wait bail out within seconds.
+_FATAL_MARKERS = (
+    "Engine core initialization failed",
+    "No available memory for the cache blocks",
+    "Address already in use",
+    "CUDA out of memory",
+)
+
+
+def _log_tail(path: str, n: int = 25, max_bytes: int = 256 * 1024) -> list[str]:
+    """Last ``n`` lines of the worker log (bounded window, backwards read; empty list if unreadable)."""
+    if not path:
+        return []
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - max_bytes))
+            chunk = f.read()
+    except OSError:
+        return []
+    return chunk.decode("utf-8", "replace").splitlines()[-n:]
+
+
+def _fatal_in_log(path: str) -> str | None:
+    """First fatal startup marker found near the tail of the worker log (else None)."""
+    tail = "\n".join(_log_tail(path, n=512))
+    for marker in _FATAL_MARKERS:
+        if marker in tail:
+            return marker
+    return None
+
+
+def _startup_failure(worker: Worker, reason: str) -> str:
+    """Compose a load-failure message carrying the worker log tail (when present).
+
+    The tail is what makes a failed load actionable from the API error alone —
+    without it the client only gets "see <log_path>" and must hunt the log.
+    """
+    tail = _log_tail(worker.log_path)
+    if tail:
+        return f"{reason}\n--- worker log tail ---\n" + "\n".join(tail)
+    where = f"; see {worker.log_path}" if worker.log_path else ""
+    return f"{reason}{where}"
+
 
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -271,7 +320,10 @@ class WorkerManager:
         os.makedirs(logs_dir, exist_ok=True)
         safe = info.name.replace("/", "__")
         worker.log_path = str(logs_dir / f"{safe}.log")
-        logf = open(worker.log_path, "ab")
+        # fresh log per load: appending ("ab") would let a stale fatal line from a
+        # previous failed load trip the fast-fail scan (or confuse the user) on the
+        # next attempt of the same model
+        logf = open(worker.log_path, "wb")
 
         log.info("spawning worker: %s", " ".join(cmd))
         worker.process = await asyncio.create_subprocess_exec(
@@ -306,8 +358,11 @@ class WorkerManager:
             while time.time() < deadline:
                 if worker.process and worker.process.returncode is not None:
                     raise RuntimeError(
-                        f"worker exited during startup (rc={worker.process.returncode}); see {worker.log_path}"
+                        _startup_failure(worker, f"worker exited during startup (rc={worker.process.returncode})")
                     )
+                fatal = _fatal_in_log(worker.log_path)
+                if fatal:
+                    raise RuntimeError(_startup_failure(worker, f"worker log shows fatal startup error: {fatal}"))
                 try:
                     r = await client.get(url)
                     if r.status_code == 200:
@@ -318,7 +373,7 @@ class WorkerManager:
                     pass
                 await asyncio.sleep(1.5)
         timeout_s = timeout or s.load_timeout
-        raise TimeoutError(f"worker {worker.name} not ready within {timeout_s:.0f}s; see {worker.log_path}")
+        raise TimeoutError(_startup_failure(worker, f"worker {worker.name} not ready within {timeout_s:.0f}s"))
 
     async def unload(self, name: str) -> bool:
         """Terminate a worker and drop it from the registry."""
